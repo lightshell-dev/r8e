@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        compiler: [gcc, clang]
+        exclude:
+          - os: macos-latest
+            compiler: gcc
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set compiler
+        run: |
+          if [ "${{ matrix.compiler }}" = "gcc" ]; then
+            echo "CC=gcc" >> $GITHUB_ENV
+          else
+            echo "CC=clang" >> $GITHUB_ENV
+          fi
+
+      - name: Build (debug with sanitizers)
+        run: make debug
+
+      - name: Run tests
+        run: make test
+
+      - name: Build (release)
+        run: make clean && make release
+
+      - name: Check binary size
+        run: |
+          if [ -f r8e ]; then
+            size=$(stat -f%z r8e 2>/dev/null || stat -c%s r8e 2>/dev/null)
+            echo "Binary size: ${size} bytes ($(( size / 1024 ))KB)"
+            if [ "$size" -gt 200000 ]; then
+              echo "::warning::Binary size exceeds 200KB target"
+            fi
+          fi
+
+  build-size-optimized:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (size optimized)
+        run: make size
+
+      - name: Report binary size
+        run: |
+          if [ -f r8e ]; then
+            size=$(stat -c%s r8e)
+            echo "Size-optimized binary: ${size} bytes ($(( size / 1024 ))KB)"
+            echo "### Binary Size" >> $GITHUB_STEP_SUMMARY
+            echo "Size-optimized: **$(( size / 1024 ))KB**" >> $GITHUB_STEP_SUMMARY
+          fi
