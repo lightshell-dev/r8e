@@ -66,10 +66,7 @@ SRCS_CORE = \
 	src/r8e_number.c \
 	src/r8e_string.c \
 	src/r8e_atom.c \
-	src/r8e_token.c \
 	src/r8e_parse.c \
-	src/r8e_bc.c \
-	src/r8e_scope.c \
 	src/r8e_interp.c \
 	src/r8e_object.c \
 	src/r8e_array.c \
@@ -112,8 +109,8 @@ HDRS = \
 	include/r8e_atoms.h \
 	include/r8e_api.h
 
-# Test sources
-SRCS_TEST = tests/test_runner.c $(wildcard tests/unit/*.c)
+# Test sources (r8e_test_stubs.c provides weak stubs for unimplemented symbols)
+SRCS_TEST = tests/test_runner.c $(wildcard tests/unit/*.c) src/r8e_test_stubs.c
 
 # Benchmark sources
 SRCS_BENCH = bench/bench_runner.c

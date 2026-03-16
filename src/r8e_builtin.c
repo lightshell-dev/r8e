@@ -161,8 +161,11 @@ typedef struct {
 /* Frozen bit */
 #define R8E_GC_FROZEN_BIT   0x00000010U
 
+/* Forward declaration so R8ENativeFunc sees the typedef name */
 /* Native function callback type */
-typedef R8EValue (*R8ENativeFunc)(struct R8EContext *ctx, R8EValue this_val,
+typedef struct R8EContext R8EContext;
+
+typedef R8EValue (*R8ENativeFunc)(R8EContext *ctx, R8EValue this_val,
                                   int argc, const R8EValue *argv);
 
 /* Wrapped native function object stored on heap */
@@ -175,8 +178,8 @@ typedef struct {
     uint16_t      pad;
 } R8ENativeFuncObj;
 
-/* Context structure stub */
-typedef struct R8EContext {
+/* Context structure stub (forward-declared above for R8ENativeFunc) */
+struct R8EContext {
     void     *arena;
     void     *atom_table;
     void     *global_object;
@@ -185,7 +188,7 @@ typedef struct R8EContext {
     void    **prototypes;    /* prototype table */
     uint16_t  proto_count;
     uint32_t  next_symbol_id;
-} R8EContext;
+};
 
 /* =========================================================================
  * Atom IDs (from r8e_atoms.h - replicated for self-containment)
@@ -477,6 +480,8 @@ extern bool      r8e_is_integer(R8EValue v);
 extern bool      r8e_is_safe_integer(R8EValue v);
 
 /* r8e_array.c */
+extern R8EArray *r8e_array_new(R8EContext *ctx, uint32_t initial_capacity);
+extern void      r8e_array_destroy(R8EContext *ctx, R8EArray *arr);
 extern bool      r8e_array_is_array(R8EValue val);
 extern R8EValue  r8e_array_get(R8EContext *ctx, const R8EArray *arr,
                                 uint32_t index);
@@ -500,6 +505,10 @@ extern bool      r8e_array_includes(R8EContext *ctx, const R8EArray *arr,
 extern R8EValue  r8e_array_at(R8EContext *ctx, const R8EArray *arr,
                                int32_t index);
 extern void      r8e_array_reverse(R8EContext *ctx, R8EArray *arr);
+typedef int (*R8EArrayCompareFn)(R8EContext *ctx, R8EValue a, R8EValue b,
+                                  void *user_data);
+extern void      r8e_array_sort(R8EContext *ctx, R8EArray *arr,
+                                 R8EArrayCompareFn cmp, void *user_data);
 extern void      r8e_array_fill(R8EContext *ctx, R8EArray *arr, R8EValue val,
                                  int32_t start, int32_t end);
 extern void      r8e_array_copy_within(R8EContext *ctx, R8EArray *arr,
@@ -1431,14 +1440,54 @@ static R8EValue builtin_array_reverse(
     return this_val;
 }
 
+/*
+ * Wrapper context for passing JS compare function to the C sort routine.
+ */
+typedef struct {
+    R8EContext *ctx;
+    R8EValue   compare_fn;
+} R8ESortCtx;
+
+static int sort_with_comparefn(R8EContext *ctx, R8EValue a, R8EValue b,
+                                void *user_data) {
+    R8ESortCtx *sctx = (R8ESortCtx *)user_data;
+    if (!R8E_IS_POINTER(sctx->compare_fn)) return 0;
+
+    R8ENativeFuncObj *fobj = (R8ENativeFuncObj *)r8e_get_pointer(
+        sctx->compare_fn);
+    if (!fobj || (fobj->flags & 0x0F) != R8E_GC_KIND_FUNC || !fobj->func)
+        return 0;
+
+    R8EValue args[2] = { a, b };
+    R8EValue result = fobj->func(sctx->ctx, R8E_UNDEFINED, 2, args);
+
+    /* Convert result to int: < 0, 0, or > 0 */
+    if (R8E_IS_INT32(result)) return r8e_get_int32(result);
+    if (R8E_IS_DOUBLE(result)) {
+        double d = r8e_get_double(result);
+        if (d < 0) return -1;
+        if (d > 0) return 1;
+        return 0;
+    }
+    return 0;
+}
+
 static R8EValue builtin_array_sort(
     R8EContext *ctx, R8EValue this_val, int argc, const R8EValue *argv)
 {
     R8EArray *arr = get_array_ptr(ctx, this_val, "Array.prototype.sort");
     if (!arr) return R8E_UNDEFINED;
-    /* TODO: support comparefn callback; for now use default sort */
-    (void)argc; (void)argv;
-    r8e_array_sort(ctx, arr, NULL);
+
+    if (argc > 0 && R8E_IS_POINTER(argv[0])) {
+        /* User provided a compare function */
+        R8ESortCtx sctx;
+        sctx.ctx = ctx;
+        sctx.compare_fn = argv[0];
+        r8e_array_sort(ctx, arr, sort_with_comparefn, &sctx);
+    } else {
+        /* Default sort (lexicographic) */
+        r8e_array_sort(ctx, arr, NULL, NULL);
+    }
     return this_val;
 }
 
@@ -2329,26 +2378,102 @@ static R8EValue builtin_string_replaceAll(
     return result;
 }
 
-/* String.prototype.match, matchAll, search, normalize - stubs */
+/*
+ * String.prototype.match - when called with a string argument (not RegExp),
+ * convert to RegExp and find first match. For now, implement simple string
+ * matching that returns an array with the match, or null if not found.
+ */
 static R8EValue builtin_string_match(
     R8EContext *ctx, R8EValue this_val, int argc, const R8EValue *argv)
 {
-    (void)ctx; (void)this_val; (void)argc; (void)argv;
-    return R8E_NULL; /* TODO: implement when RegExp engine is integrated */
+    char tbuf[8]; uint32_t tlen;
+    const char *s = get_this_string(ctx, this_val, tbuf, &tlen);
+
+    R8EValue search_val = arg_or_undef(argc, argv, 0);
+    if (R8E_IS_UNDEFINED(search_val) || R8E_IS_NULL(search_val)) {
+        /* match() or match(undefined) matches empty string at pos 0 */
+        R8EArray *result = r8e_array_new(ctx, 1);
+        if (!result) return R8E_NULL;
+        r8e_array_push(ctx, result, make_heap_string(ctx, "", 0));
+        return r8e_from_pointer(result);
+    }
+
+    /* Convert search value to string */
+    R8EValue search_str = r8e_to_string(ctx, search_val);
+    char sbuf[8]; uint32_t slen;
+    const char *search = get_str_data(search_str, sbuf, &slen);
+
+    /* Find the first occurrence */
+    for (uint32_t i = 0; i + slen <= tlen; i++) {
+        if (memcmp(s + i, search, slen) == 0) {
+            /* Found a match - return array with the match string */
+            R8EArray *result = r8e_array_new(ctx, 1);
+            if (!result) return R8E_NULL;
+            r8e_array_push(ctx, result, make_heap_string(ctx, search, slen));
+            /* Set .index property */
+            /* (Would need named properties on array; simplified) */
+            return r8e_from_pointer(result);
+        }
+    }
+
+    return R8E_NULL; /* no match */
 }
 
 static R8EValue builtin_string_matchAll(
     R8EContext *ctx, R8EValue this_val, int argc, const R8EValue *argv)
 {
-    (void)ctx; (void)this_val; (void)argc; (void)argv;
-    return R8E_UNDEFINED; /* TODO */
+    /* matchAll requires a global regex. For string args, return an iterator
+     * of all matches. Simplified: return an array of match arrays. */
+    char tbuf[8]; uint32_t tlen;
+    const char *s = get_this_string(ctx, this_val, tbuf, &tlen);
+
+    R8EValue search_val = arg_or_undef(argc, argv, 0);
+    R8EValue search_str = r8e_to_string(ctx, search_val);
+    char sbuf[8]; uint32_t slen;
+    const char *search = get_str_data(search_str, sbuf, &slen);
+
+    R8EArray *results = r8e_array_new(ctx, 4);
+    if (!results) return R8E_UNDEFINED;
+
+    if (slen == 0) return r8e_from_pointer(results);
+
+    for (uint32_t i = 0; i + slen <= tlen; i++) {
+        if (memcmp(s + i, search, slen) == 0) {
+            R8EArray *match = r8e_array_new(ctx, 1);
+            if (match) {
+                r8e_array_push(ctx, match,
+                               make_heap_string(ctx, search, slen));
+                r8e_array_push(ctx, results, r8e_from_pointer(match));
+            }
+            i += slen - 1; /* advance past match */
+        }
+    }
+
+    return r8e_from_pointer(results);
 }
 
+/*
+ * String.prototype.search - find the first occurrence of a pattern.
+ * Returns the index of the first match, or -1 if not found.
+ */
 static R8EValue builtin_string_search(
     R8EContext *ctx, R8EValue this_val, int argc, const R8EValue *argv)
 {
-    (void)ctx; (void)this_val; (void)argc; (void)argv;
-    return r8e_from_int32(-1); /* TODO */
+    char tbuf[8]; uint32_t tlen;
+    const char *s = get_this_string(ctx, this_val, tbuf, &tlen);
+
+    R8EValue search_val = arg_or_undef(argc, argv, 0);
+    R8EValue search_str = r8e_to_string(ctx, search_val);
+    char sbuf[8]; uint32_t slen;
+    const char *search = get_str_data(search_str, sbuf, &slen);
+
+    for (uint32_t i = 0; i + slen <= tlen; i++) {
+        if (memcmp(s + i, search, slen) == 0) {
+            return r8e_from_int32((int32_t)i);
+        }
+    }
+
+    return r8e_from_int32(-1);
 }
 
 static R8EValue builtin_string_normalize(

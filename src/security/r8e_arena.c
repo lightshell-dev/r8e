@@ -436,7 +436,7 @@ void r8e_canary_init(void *frame_base) {
  * @param frame_base  Pointer to the canary location.
  * @return            true if canary is intact, false if corrupted.
  */
-bool r8e_canary_check(void *frame_base) {
+static bool r8e_canary_check(void *frame_base) {
     if (!frame_base) return false;
     uint64_t val;
     memcpy(&val, frame_base, sizeof(uint64_t));

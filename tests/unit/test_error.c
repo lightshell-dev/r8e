@@ -246,22 +246,10 @@ extern R8EValue r8e_throw_const_assign(R8EContext *ctx, const char *name);
 extern R8EValue r8e_throw_invalid_lhs(R8EContext *ctx);
 extern R8EValue r8e_throw_stack_overflow(R8EContext *ctx);
 
-/* =========================================================================
- * Stubs for external functions that r8e_error.c calls
- * ========================================================================= */
-
-void r8e_gc_header_init(R8EGCHeader *hdr, uint32_t kind, uint32_t proto_id) {
-    hdr->flags = (kind << R8E_GC_KIND_SHIFT) | (1u << R8E_GC_RC_INLINE_SHIFT);
-    hdr->proto_id = proto_id;
-}
-
-void r8e_retain(R8EContext *ctx, R8EValue val) {
-    (void)ctx; (void)val;
-}
-
-void r8e_release(R8EContext *ctx, R8EValue val) {
-    (void)ctx; (void)val;
-}
+/* These are provided by r8e_gc.c at link time */
+extern void r8e_gc_header_init(R8EGCHeader *hdr, uint32_t kind, uint32_t proto_id);
+extern void r8e_retain(R8EContext *ctx, R8EValue val);
+extern void r8e_release(R8EContext *ctx, R8EValue val);
 
 /* =========================================================================
  * Test Harness

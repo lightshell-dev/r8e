@@ -957,6 +957,10 @@ R8EValue r8e_generator_throw(R8EIterContext *ctx, R8EValue gen_val,
  *   - Returning the sub-iterator's final value as the yield* expression value
  * ========================================================================= */
 
+/* Forward declarations (defined later in this file) */
+R8EValue r8e_get_iterator(R8EIterContext *ctx, R8EValue iterable);
+R8EValue r8e_iterator_next(R8EIterContext *ctx, R8EValue iter);
+
 /**
  * Handle yield* delegation within a generator's next() call.
  *

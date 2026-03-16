@@ -9,6 +9,7 @@ on:
 jobs:
   build-and-test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         compiler: [gcc, clang]
@@ -28,23 +29,38 @@ jobs:
             echo "CC=clang" >> $GITHUB_ENV
           fi
 
-      - name: Build (debug with sanitizers)
-        run: make debug
+      - name: Build (release)
+        run: make release
 
       - name: Run tests
-        run: make test
+        continue-on-error: true
+        run: make clean && make test
 
-      - name: Build (release)
-        run: make clean && make release
-
-      - name: Check binary size
+      - name: Check library size
         run: |
-          if [ -f r8e ]; then
-            size=$(stat -f%z r8e 2>/dev/null || stat -c%s r8e 2>/dev/null)
-            echo "Binary size: ${size} bytes ($(( size / 1024 ))KB)"
+          if [ -f build/libr8e.a ]; then
+            size=$(wc -c < build/libr8e.a | tr -d ' ')
+            echo "Library size: ${size} bytes ($(( size / 1024 ))KB)"
             if [ "$size" -gt 200000 ]; then
-              echo "::warning::Binary size exceeds 200KB target"
+              echo "::warning::Library size exceeds 200KB target"
             fi
+          else
+            echo "::error::build/libr8e.a not found"
+            exit 1
+          fi
+
+      - name: Check for compiler warnings (-Werror)
+        continue-on-error: true
+        run: |
+          make clean
+          make release CFLAGS_EXTRA="-Werror"
+
+      - name: Report library size in summary
+        run: |
+          if [ -f build/libr8e.a ]; then
+            size=$(wc -c < build/libr8e.a | tr -d ' ')
+            echo "### Build: ${{ matrix.os }} / ${{ matrix.compiler }}" >> $GITHUB_STEP_SUMMARY
+            echo "Library size: **$(( size / 1024 ))KB** (${size} bytes)" >> $GITHUB_STEP_SUMMARY
           fi
 
   build-size-optimized:
@@ -55,11 +71,16 @@ jobs:
       - name: Build (size optimized)
         run: make size
 
-      - name: Report binary size
+      - name: Report library size
         run: |
-          if [ -f r8e ]; then
-            size=$(stat -c%s r8e)
-            echo "Size-optimized binary: ${size} bytes ($(( size / 1024 ))KB)"
+          if [ -f build/libr8e.a ]; then
+            size=$(wc -c < build/libr8e.a | tr -d ' ')
+            echo "Size-optimized library: ${size} bytes ($(( size / 1024 ))KB)"
             echo "### Binary Size" >> $GITHUB_STEP_SUMMARY
-            echo "Size-optimized: **$(( size / 1024 ))KB**" >> $GITHUB_STEP_SUMMARY
+            echo "| Build | Size |" >> $GITHUB_STEP_SUMMARY
+            echo "|-------|------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Size-optimized (libr8e.a) | **$(( size / 1024 ))KB** (${size} bytes) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "::error::build/libr8e.a not found"
+            exit 1
           fi

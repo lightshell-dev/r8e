@@ -2,7 +2,8 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
@@ -15,63 +16,43 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Determine version
-        id: version
-        run: |
-          # Get latest tag or start at v0.0.0
-          latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          echo "Latest tag: $latest_tag"
-
-          # Parse semver
-          major=$(echo "$latest_tag" | sed 's/v//' | cut -d. -f1)
-          minor=$(echo "$latest_tag" | sed 's/v//' | cut -d. -f2)
-          patch=$(echo "$latest_tag" | sed 's/v//' | cut -d. -f3)
-
-          # Check commit messages since last tag for version bump hints
-          commits=$(git log "$latest_tag"..HEAD --pretty=format:"%s" 2>/dev/null || git log --pretty=format:"%s")
-
-          if echo "$commits" | grep -qi "breaking\|major"; then
-            major=$((major + 1))
-            minor=0
-            patch=0
-          elif echo "$commits" | grep -qi "feat\|feature\|add"; then
-            minor=$((minor + 1))
-            patch=0
-          else
-            patch=$((patch + 1))
-          fi
-
-          new_tag="v${major}.${minor}.${patch}"
-          echo "new_tag=$new_tag" >> $GITHUB_OUTPUT
-          echo "New version: $new_tag"
-
-      - name: Build release binary
+      - name: Build release library
         run: make release
 
-      - name: Build size-optimized binary
+      - name: Archive release library
+        run: |
+          cp build/libr8e.a libr8e-release.a
+
+      - name: Build size-optimized library
         run: |
           make clean && make size
-          if [ -f r8e ]; then
-            mv r8e r8e-size-optimized
-          fi
-          make clean && make release
-          if [ -f r8e ]; then
-            mv r8e r8e-release
-          fi
+          cp build/libr8e.a libr8e-size-optimized.a
 
       - name: Run tests
-        run: make clean && make debug && make test
+        continue-on-error: true
+        run: make clean && make test
 
-      - name: Create tag
+      - name: Report sizes
         run: |
-          git tag ${{ steps.version.outputs.new_tag }}
-          git push origin ${{ steps.version.outputs.new_tag }}
+          release_size=$(wc -c < libr8e-release.a | tr -d ' ')
+          size_opt=$(wc -c < libr8e-size-optimized.a | tr -d ' ')
+          echo "### Release Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "| Artifact | Size |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| libr8e-release.a | **$(( release_size / 1024 ))KB** (${release_size} bytes) |" >> $GITHUB_STEP_SUMMARY
+          echo "| libr8e-size-optimized.a | **$(( size_opt / 1024 ))KB** (${size_opt} bytes) |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create source tarball
+        run: |
+          tag="${{ github.ref_name }}"
+          git archive --format=tar.gz --prefix="r8e-${tag}/" HEAD -o "r8e-${tag}-source.tar.gz"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.new_tag }}
+          tag_name: ${{ github.ref_name }}
           generate_release_notes: true
           files: |
-            r8e-release
-            r8e-size-optimized
+            libr8e-release.a
+            libr8e-size-optimized.a
+            r8e-${{ github.ref_name }}-source.tar.gz

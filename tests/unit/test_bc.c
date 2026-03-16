@@ -20,82 +20,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <stdbool.h>
-
-#include "../../include/r8e_types.h"
-#include "../../include/r8e_opcodes.h"
-
-/* =========================================================================
- * Forward declarations for bytecode buffer API (from r8e_bc.c)
- * ========================================================================= */
-
-typedef struct R8EBytecodeBuffer {
-    uint8_t  *code;
-    uint32_t  length;
-    uint32_t  capacity;
-    R8EValue *constants;
-    uint16_t  const_count;
-    uint16_t  const_capacity;
-    uint32_t *line_table;
-    uint16_t  line_count;
-    uint16_t  line_capacity;
-    struct R8EFuncDesc {
-        struct R8EBytecodeBuffer *bc;
-        uint32_t  name_atom;
-        uint16_t  param_count;
-        uint16_t  local_count;
-        uint16_t  capture_count;
-        uint16_t  stack_size;
-        uint8_t   is_strict;
-        uint8_t   is_arrow;
-        uint8_t   is_generator;
-        uint8_t   is_async;
-        uint16_t  source_line;
-        struct R8ECaptureInfo {
-            uint32_t atom;
-            uint8_t  src_reg;
-            uint8_t  src_depth;
-            uint8_t  is_mutable;
-        } *captures;
-    } *functions;
-    uint16_t  func_count;
-    uint16_t  func_capacity;
-    uint16_t  max_stack;
-    uint16_t  cur_stack;
-} R8EBytecodeBuffer;
-
-/* External bytecode buffer functions */
-extern int      r8e_bc_init(R8EBytecodeBuffer *bc);
-extern void     r8e_bc_destroy(R8EBytecodeBuffer *bc);
-extern int      r8e_bc_grow(R8EBytecodeBuffer *bc, uint32_t needed);
-extern int      r8e_bc_emit(R8EBytecodeBuffer *bc, uint8_t byte);
-extern int      r8e_bc_emit_u16(R8EBytecodeBuffer *bc, uint16_t val);
-extern int      r8e_bc_emit_u32(R8EBytecodeBuffer *bc, uint32_t val);
-extern int      r8e_bc_emit_i32(R8EBytecodeBuffer *bc, int32_t val);
-extern int      r8e_bc_emit_i8(R8EBytecodeBuffer *bc, int8_t val);
-extern int      r8e_bc_emit_op(R8EBytecodeBuffer *bc, uint8_t op);
-extern int      r8e_bc_emit_op_u8(R8EBytecodeBuffer *bc, uint8_t op, uint8_t val);
-extern int      r8e_bc_emit_op_u16(R8EBytecodeBuffer *bc, uint8_t op, uint16_t val);
-extern int      r8e_bc_emit_op_u32(R8EBytecodeBuffer *bc, uint8_t op, uint32_t val);
-extern void     r8e_bc_adjust_stack(R8EBytecodeBuffer *bc, int delta);
-extern uint32_t r8e_bc_current_offset(const R8EBytecodeBuffer *bc);
-extern uint32_t r8e_bc_emit_jump(R8EBytecodeBuffer *bc, uint8_t op);
-extern uint32_t r8e_bc_emit_jump8(R8EBytecodeBuffer *bc, uint8_t op);
-extern uint32_t r8e_bc_emit_jump16(R8EBytecodeBuffer *bc, uint8_t op);
-extern void     r8e_bc_patch_jump(R8EBytecodeBuffer *bc, uint32_t patch_addr);
-extern void     r8e_bc_patch_jump16(R8EBytecodeBuffer *bc, uint32_t patch_addr);
-extern void     r8e_bc_patch_u16(R8EBytecodeBuffer *bc, uint32_t addr, uint16_t val);
-extern void     r8e_bc_patch_u32(R8EBytecodeBuffer *bc, uint32_t addr, uint32_t val);
-extern int32_t  r8e_bc_read_i32(const R8EBytecodeBuffer *bc, uint32_t addr);
-extern uint16_t r8e_bc_read_u16(const R8EBytecodeBuffer *bc, uint32_t addr);
-extern int      r8e_bc_add_constant(R8EBytecodeBuffer *bc, R8EValue val);
-extern int      r8e_bc_add_function(R8EBytecodeBuffer *bc);
-extern void     r8e_bc_add_line(R8EBytecodeBuffer *bc, uint32_t line);
-extern void     r8e_bc_dump(const R8EBytecodeBuffer *bc);
+/* Include the implementation directly to test static functions */
+#include "../../src/r8e_bc.c"
 
 /* =========================================================================
  * Test Harness

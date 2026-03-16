@@ -25,61 +25,18 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "../../include/r8e_types.h"
-#include "../../include/r8e_opcodes.h"
+/* Include the bytecode buffer implementation to get struct definition
+ * and static function access (same pattern as r8e_parse.c) */
+#include "../../src/r8e_bc.c"
 #include "../../include/r8e_atoms.h"
 
-/* =========================================================================
- * Forward declarations for parser/bytecode buffer API
- * ========================================================================= */
-
-/* R8EBytecodeBuffer is defined in r8e_bc.c. We only need the struct layout
- * for accessing .code, .length, .constants, etc. Since it is #included by
- * r8e_parse.c, we re-declare the minimal layout here for test use. */
-typedef struct R8EBytecodeBuffer {
-    uint8_t  *code;
-    uint32_t  length;
-    uint32_t  capacity;
-    R8EValue *constants;
-    uint16_t  const_count;
-    uint16_t  const_capacity;
-    uint32_t *line_table;
-    uint16_t  line_count;
-    uint16_t  line_capacity;
-    struct R8EFuncDesc {
-        struct R8EBytecodeBuffer *bc;
-        uint32_t  name_atom;
-        uint16_t  param_count;
-        uint16_t  local_count;
-        uint16_t  capture_count;
-        uint16_t  stack_size;
-        uint8_t   is_strict;
-        uint8_t   is_arrow;
-        uint8_t   is_generator;
-        uint8_t   is_async;
-        uint16_t  source_line;
-        struct R8ECaptureInfo {
-            uint32_t atom;
-            uint8_t  src_reg;
-            uint8_t  src_depth;
-            uint8_t  is_mutable;
-        } *captures;
-    } *functions;
-    uint16_t  func_count;
-    uint16_t  func_capacity;
-    uint16_t  max_stack;
-    uint16_t  pad;
-} R8EBytecodeBuffer;
-
-/* External APIs from r8e_parse.c / r8e_bc.c */
+/* External APIs from r8e_parse.c */
 extern int r8e_parse(R8EAtomTable *atoms, const char *source, uint32_t length,
                      R8EBytecodeBuffer *out_bc, const char *filename);
 extern R8EBytecodeBuffer *r8e_compile_script(R8EAtomTable *atoms,
                                               const char *source,
                                               uint32_t length,
                                               const char *filename);
-extern int  r8e_bc_init(R8EBytecodeBuffer *bc);
-extern void r8e_bc_destroy(R8EBytecodeBuffer *bc);
 
 /* =========================================================================
  * Test Harness

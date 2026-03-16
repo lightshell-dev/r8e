@@ -134,8 +134,11 @@ typedef struct R8EArray {
     void      *named;
 } R8EArray;
 
+/* Forward declaration so R8ENativeFunc sees the typedef name */
 /* Native function callback type */
-typedef R8EValue (*R8ENativeFunc)(struct R8EContext *ctx, R8EValue this_val,
+typedef struct R8EContext R8EContext;
+
+typedef R8EValue (*R8ENativeFunc)(R8EContext *ctx, R8EValue this_val,
                                   int argc, const R8EValue *argv);
 
 /* Wrapped native function object */
@@ -148,8 +151,8 @@ typedef struct {
     uint16_t      pad;
 } R8ENativeFuncObj;
 
-/* Context structure stub */
-typedef struct R8EContext {
+/* Context structure stub (forward-declared above for R8ENativeFunc) */
+struct R8EContext {
     void     *arena;
     void     *atom_table;
     void     *global_object;
@@ -160,7 +163,7 @@ typedef struct R8EContext {
     uint32_t  next_symbol_id;
     /* Weak reference registry for GC integration */
     struct R8EWeakTable *weak_table;
-} R8EContext;
+};
 
 /* Heap string header */
 typedef struct R8EString {

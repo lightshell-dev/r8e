@@ -147,77 +147,21 @@ typedef struct R8EContext {
  * r8e_arr_set, r8e_arr_push, r8e_string_new, r8e_string_data,
  * r8e_atom_intern_str, r8e_atom_get_str, r8e_call_fn.
  *
- * We provide minimal functional implementations backed by simple
- * data structures, sufficient for JSON parse/stringify testing.
+ * Object functions (r8e_obj_*) and r8e_string_new are linked from source
+ * (r8e_object.c and r8e_string.c). Array stubs (r8e_arr_*) are provided
+ * here since source uses r8e_array_* names. Other stubs (atoms, string_data,
+ * call_fn) are provided here since they don't exist in linked source.
  * ========================================================================= */
 
-/* --- Mini Object Stub --- */
+/* --- Object API (linked from r8e_object.c) --- */
+
+extern void    *r8e_obj_new(R8EContext *ctx);
+extern R8EValue r8e_obj_get(R8EContext *ctx, void *obj, uint32_t key);
+extern void    *r8e_obj_set(R8EContext *ctx, void *obj, uint32_t key, R8EValue val);
+extern bool     r8e_obj_has(R8EContext *ctx, void *obj, uint32_t key);
+extern uint32_t r8e_obj_keys(R8EContext *ctx, void *obj, uint32_t *out_keys, uint32_t max_keys);
 
 #define STUB_MAX_PROPS 32
-
-typedef struct StubObj {
-    R8EGCHeader hdr;
-    uint32_t    keys[STUB_MAX_PROPS];
-    R8EValue    vals[STUB_MAX_PROPS];
-    uint32_t    count;
-} StubObj;
-
-void *r8e_obj_new(R8EContext *ctx) {
-    (void)ctx;
-    StubObj *obj = (StubObj *)calloc(1, sizeof(StubObj));
-    if (obj) {
-        obj->hdr.flags = (R8E_GC_KIND_OBJECT << R8E_GC_KIND_SHIFT);
-        obj->hdr.proto_id = 1; /* PROTO_OBJECT */
-    }
-    return obj;
-}
-
-R8EValue r8e_obj_get(R8EContext *ctx, void *obj, uint32_t key) {
-    (void)ctx;
-    StubObj *o = (StubObj *)obj;
-    if (!o) return R8E_UNDEFINED;
-    for (uint32_t i = 0; i < o->count; i++) {
-        if (o->keys[i] == key) return o->vals[i];
-    }
-    return R8E_UNDEFINED;
-}
-
-void *r8e_obj_set(R8EContext *ctx, void *obj, uint32_t key, R8EValue val) {
-    (void)ctx;
-    StubObj *o = (StubObj *)obj;
-    if (!o) return NULL;
-    /* Update existing */
-    for (uint32_t i = 0; i < o->count; i++) {
-        if (o->keys[i] == key) { o->vals[i] = val; return obj; }
-    }
-    /* Insert new */
-    if (o->count < STUB_MAX_PROPS) {
-        o->keys[o->count] = key;
-        o->vals[o->count] = val;
-        o->count++;
-    }
-    return obj;
-}
-
-bool r8e_obj_has(R8EContext *ctx, void *obj, uint32_t key) {
-    (void)ctx;
-    StubObj *o = (StubObj *)obj;
-    if (!o) return false;
-    for (uint32_t i = 0; i < o->count; i++) {
-        if (o->keys[i] == key) return true;
-    }
-    return false;
-}
-
-uint32_t r8e_obj_keys(R8EContext *ctx, void *obj,
-                       uint32_t *out_keys, uint32_t max_keys) {
-    (void)ctx;
-    StubObj *o = (StubObj *)obj;
-    if (!o) return 0;
-    uint32_t n = o->count < max_keys ? o->count : max_keys;
-    for (uint32_t i = 0; i < n; i++) out_keys[i] = o->keys[i];
-    return n;
-}
 
 /* --- Mini Array Stub --- */
 
@@ -267,23 +211,12 @@ void r8e_arr_push(R8EContext *ctx, void *arr, R8EValue val) {
     a->elems[a->length++] = val;
 }
 
-/* --- Mini String Stub --- */
-
-R8EValue r8e_string_new(R8EContext *ctx, const char *data, uint32_t len) {
-    (void)ctx;
-    if (!data) return R8E_UNDEFINED;
-    R8EHeapString *s = (R8EHeapString *)malloc(
-        sizeof(R8EHeapString) + len + 1);
-    if (!s) return R8E_UNDEFINED;
-    s->flags = R8E_STR_IS_ASCII;
-    s->hash = 0;
-    s->byte_length = len;
-    s->char_length = len;
-    s->offset_table = NULL;
-    memcpy(s->data, data, len);
-    s->data[len] = '\0';
-    return r8e_from_pointer(s);
-}
+/* --- String API (r8e_string_new linked from r8e_string.c) ---
+ *
+ * Note: r8e_json.c declares r8e_string_new as returning R8EValue,
+ * but the real implementation in r8e_string.c returns R8EString*.
+ * Both are 64-bit values on this platform, so the linkage works.
+ */
 
 const char *r8e_string_data(R8EValue v, uint32_t *out_len) {
     if (!R8E_IS_POINTER(v)) return NULL;
@@ -602,9 +535,10 @@ static void test_json_parse_empty_object(void) {
     R8EValue v = r8e_json_parse(ctx, "{}", 0);
     ASSERT_TRUE(R8E_IS_POINTER(v));
 
-    StubObj *obj = (StubObj *)r8e_get_pointer(v);
+    void *obj = r8e_get_pointer(v);
     ASSERT_TRUE(obj != NULL);
-    ASSERT_EQ_INT(obj->count, 0);
+    uint32_t keys0[STUB_MAX_PROPS];
+    ASSERT_EQ_INT(r8e_obj_keys(ctx, obj, keys0, STUB_MAX_PROPS), 0);
 
     free(obj);
     free(ctx);
@@ -618,9 +552,10 @@ static void test_json_parse_simple_object(void) {
     R8EValue v = r8e_json_parse(ctx, "{\"x\": 10}", 0);
     ASSERT_TRUE(R8E_IS_POINTER(v));
 
-    StubObj *obj = (StubObj *)r8e_get_pointer(v);
+    void *obj = r8e_get_pointer(v);
     ASSERT_TRUE(obj != NULL);
-    ASSERT_EQ_INT(obj->count, 1);
+    uint32_t keys1[STUB_MAX_PROPS];
+    ASSERT_EQ_INT(r8e_obj_keys(ctx, obj, keys1, STUB_MAX_PROPS), 1);
 
     /* Look up the "x" key via atom */
     uint32_t atom = r8e_atom_intern_str(ctx, "x", 1);
@@ -1024,17 +959,19 @@ static void test_json_parse_nested_object(void) {
     R8EValue v = r8e_json_parse(ctx, "{\"a\": {\"b\": 2}}", 0);
     ASSERT_TRUE(R8E_IS_POINTER(v));
 
-    StubObj *outer = (StubObj *)r8e_get_pointer(v);
+    void *outer = r8e_get_pointer(v);
     ASSERT_TRUE(outer != NULL);
-    ASSERT_EQ_INT(outer->count, 1);
+    uint32_t outer_keys[STUB_MAX_PROPS];
+    ASSERT_EQ_INT(r8e_obj_keys(ctx, outer, outer_keys, STUB_MAX_PROPS), 1);
 
     uint32_t atom_a = r8e_atom_intern_str(ctx, "a", 1);
     R8EValue inner_val = r8e_obj_get(ctx, outer, atom_a);
     ASSERT_TRUE(R8E_IS_POINTER(inner_val));
 
-    StubObj *inner = (StubObj *)r8e_get_pointer(inner_val);
+    void *inner = r8e_get_pointer(inner_val);
     ASSERT_TRUE(inner != NULL);
-    ASSERT_EQ_INT(inner->count, 1);
+    uint32_t inner_keys[STUB_MAX_PROPS];
+    ASSERT_EQ_INT(r8e_obj_keys(ctx, inner, inner_keys, STUB_MAX_PROPS), 1);
 
     uint32_t atom_b = r8e_atom_intern_str(ctx, "b", 1);
     R8EValue b_val = r8e_obj_get(ctx, inner, atom_b);
@@ -1086,9 +1023,10 @@ static void test_json_parse_object_with_array(void) {
     R8EValue v = r8e_json_parse(ctx, "{\"items\": [1, 2, 3]}", 0);
     ASSERT_TRUE(R8E_IS_POINTER(v));
 
-    StubObj *obj = (StubObj *)r8e_get_pointer(v);
+    void *obj = r8e_get_pointer(v);
     ASSERT_TRUE(obj != NULL);
-    ASSERT_EQ_INT(obj->count, 1);
+    uint32_t obj_keys[STUB_MAX_PROPS];
+    ASSERT_EQ_INT(r8e_obj_keys(ctx, obj, obj_keys, STUB_MAX_PROPS), 1);
 
     uint32_t atom_items = r8e_atom_intern_str(ctx, "items", 5);
     R8EValue arr_val = r8e_obj_get(ctx, obj, atom_items);
@@ -1138,7 +1076,7 @@ static void test_json_parse_duplicate_keys(void) {
     R8EValue v = r8e_json_parse(ctx, "{\"a\": 1, \"a\": 2}", 0);
     ASSERT_TRUE(R8E_IS_POINTER(v));
 
-    StubObj *obj = (StubObj *)r8e_get_pointer(v);
+    void *obj = r8e_get_pointer(v);
     ASSERT_TRUE(obj != NULL);
 
     uint32_t atom_a = r8e_atom_intern_str(ctx, "a", 1);
@@ -1334,7 +1272,7 @@ static void test_json_stringify_object(void) {
     ASSERT_TRUE(ctx != NULL);
 
     /* Build an object with one property */
-    StubObj *obj = (StubObj *)r8e_obj_new(ctx);
+    void *obj = r8e_obj_new(ctx);
     ASSERT_TRUE(obj != NULL);
     uint32_t key_atom = r8e_atom_intern_str(ctx, "x", 1);
     r8e_obj_set(ctx, obj, key_atom, r8e_from_int32(10));
@@ -1549,9 +1487,10 @@ static void test_json_parse_multi_prop_object(void) {
         "{\"a\": 1, \"b\": true, \"c\": null}", 0);
     ASSERT_TRUE(R8E_IS_POINTER(v));
 
-    StubObj *obj = (StubObj *)r8e_get_pointer(v);
+    void *obj = r8e_get_pointer(v);
     ASSERT_TRUE(obj != NULL);
-    ASSERT_EQ_INT(obj->count, 3);
+    uint32_t mp_keys[STUB_MAX_PROPS];
+    ASSERT_EQ_INT(r8e_obj_keys(ctx, obj, mp_keys, STUB_MAX_PROPS), 3);
 
     uint32_t atom_a = r8e_atom_intern_str(ctx, "a", 1);
     uint32_t atom_b = r8e_atom_intern_str(ctx, "b", 1);

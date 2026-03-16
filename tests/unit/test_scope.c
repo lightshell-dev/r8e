@@ -23,88 +23,10 @@
  * SPDX-License-Identifier: MIT
  */
 
+/* Include the implementation directly to test static functions */
+#include "../../src/r8e_scope.c"
+
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <stdbool.h>
-
-#include "../../include/r8e_types.h"
-
-/* =========================================================================
- * Forward declarations for scope API (from r8e_scope.c)
- *
- * Since r8e_scope.c uses static functions that are #included by r8e_parse.c,
- * we declare them as extern here for direct testing.
- * ========================================================================= */
-
-/* Scope Pool */
-typedef struct R8EScopePool {
-    R8EScope *free_list[16]; /* R8E_SCOPE_POOL_MAX */
-    int       count;
-} R8EScopePool;
-
-extern void     r8e_scope_pool_init(R8EScopePool *pool);
-extern void     r8e_scope_pool_destroy(R8EScopePool *pool);
-extern R8EScope *r8e_scope_pool_alloc(R8EScopePool *pool);
-extern void     r8e_scope_pool_release(R8EScopePool *pool, R8EScope *scope);
-
-/* Variable Resolution */
-typedef enum {
-    R8E_RESOLVE_LOCAL   = 0,
-    R8E_RESOLVE_CLOSURE = 1,
-    R8E_RESOLVE_GLOBAL  = 2,
-    R8E_RESOLVE_ERROR   = 3
-} R8EResolveKind;
-
-typedef struct {
-    R8EResolveKind kind;
-    uint8_t        reg;
-    uint8_t        capture_idx;
-    uint8_t        depth;
-    uint8_t        classification;
-    uint8_t        flags;
-} R8EResolveResult;
-
-/* Scope operations */
-extern R8EScope *r8e_scope_push(R8EScopePool *pool, R8EScope *parent, uint8_t flags);
-extern R8EScope *r8e_scope_pop(R8EScopePool *pool, R8EScope *scope);
-extern int       r8e_scope_define_var(R8EScope *scope, uint32_t atom, uint8_t var_flags);
-extern R8EResolveResult r8e_scope_resolve_var(R8EScope *scope, uint32_t atom);
-extern R8EVarInfo *r8e_scope_find_var(R8EScope *scope, uint32_t atom);
-extern void      r8e_scope_mark_captured(R8EScope *scope, uint32_t atom);
-extern void      r8e_scope_mark_mutated(R8EScope *scope, uint32_t atom);
-extern R8EVarClass r8e_classify_use(R8EScope *scope, uint32_t atom,
-                                     bool is_store, bool is_return,
-                                     bool is_captured);
-extern uint16_t  r8e_scope_total_regs(const R8EScope *func_scope);
-extern void      r8e_scope_dump(const R8EScope *scope, int indent);
-
-/* Break/Continue Label Stack */
-#define R8E_MAX_BREAK_PATCHES 64
-
-typedef struct R8EBreakLabel {
-    uint32_t  atom;
-    uint32_t  break_patches[R8E_MAX_BREAK_PATCHES];
-    uint16_t  break_count;
-    uint32_t  continue_target;
-    bool      is_switch;
-} R8EBreakLabel;
-
-#define R8E_MAX_LABEL_DEPTH 32
-
-typedef struct R8ELabelStack {
-    R8EBreakLabel labels[R8E_MAX_LABEL_DEPTH];
-    int           depth;
-} R8ELabelStack;
-
-extern void           r8e_labels_init(R8ELabelStack *ls);
-extern int            r8e_labels_push(R8ELabelStack *ls, uint32_t atom, bool is_switch);
-extern R8EBreakLabel *r8e_labels_top(R8ELabelStack *ls);
-extern R8EBreakLabel *r8e_labels_pop(R8ELabelStack *ls);
-extern R8EBreakLabel *r8e_labels_find_break(R8ELabelStack *ls, uint32_t atom);
-extern R8EBreakLabel *r8e_labels_find_continue(R8ELabelStack *ls, uint32_t atom);
-extern int            r8e_label_add_break(R8EBreakLabel *label, uint32_t patch_addr);
 
 /* =========================================================================
  * Test Harness

@@ -220,19 +220,12 @@ extern R8EBoundFunction *r8e_bound_function_new(R8EContext *ctx,
                                                   uint32_t name_atom);
 extern void r8e_bound_function_free(R8EContext *ctx, R8EBoundFunction *bf);
 
-/* Stubs for external functions the module references */
-void r8e_gc_header_init(R8EGCHeader *hdr, uint32_t kind, uint32_t proto_id) {
-    hdr->flags = (kind << R8E_GC_KIND_SHIFT) | (1u << R8E_GC_RC_INLINE_SHIFT);
-    hdr->proto_id = proto_id;
-}
-void r8e_retain(R8EContext *ctx, R8EValue val) { (void)ctx; (void)val; }
-void r8e_release(R8EContext *ctx, R8EValue val) { (void)ctx; (void)val; }
-R8EValue r8e_throw_type_error(R8EContext *ctx, const char *fmt, ...) {
-    (void)ctx; (void)fmt; return R8E_UNDEFINED;
-}
-R8EValue r8e_throw_range_error(R8EContext *ctx, const char *fmt, ...) {
-    (void)ctx; (void)fmt; return R8E_UNDEFINED;
-}
+/* These are provided by r8e_gc.c and r8e_error.c at link time */
+extern void r8e_gc_header_init(R8EGCHeader *hdr, uint32_t kind, uint32_t proto_id);
+extern void r8e_retain(R8EContext *ctx, R8EValue val);
+extern void r8e_release(R8EContext *ctx, R8EValue val);
+extern R8EValue r8e_throw_type_error(R8EContext *ctx, const char *fmt, ...);
+extern R8EValue r8e_throw_range_error(R8EContext *ctx, const char *fmt, ...);
 
 /* =========================================================================
  * Test Harness

@@ -519,6 +519,10 @@ static void r8e_promise_resolve_thenable(R8EPromiseContext *ctx,
                                          R8EValue thenable,
                                          R8EValue then_fn);
 
+/* Forward declaration (defined later in this file) */
+void r8e_async_resume(R8EPromiseContext *ctx, R8EAsyncState *state,
+                      R8EValue value, bool is_throw);
+
 /**
  * Execute a single microtask.
  */
