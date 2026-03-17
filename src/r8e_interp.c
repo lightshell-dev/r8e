@@ -39,18 +39,18 @@ typedef uint64_t R8EValue;
 #define R8E_FALSE      0xFFFA000000000003ULL
 #define R8E_NAN_VAL    0x7FF8000000000000ULL
 
-/* NaN-boxing type checks */
+/* NaN-boxing type checks (16-bit tag in bits 48-63, 48-bit payload) */
 #define R8E_IS_DOUBLE(v)     ((v) < 0xFFF8000000000000ULL)
-#define R8E_IS_INT32(v)      (((v) >> 32) == 0xFFF80000U)
-#define R8E_IS_POINTER(v)    (((v) >> 32) == 0xFFF90000U)
+#define R8E_IS_INT32(v)      (((v) >> 48) == 0xFFF8U)
+#define R8E_IS_POINTER(v)    (((v) >> 48) == 0xFFF9U)
 #define R8E_IS_INLINE_STR(v) (((v) >> 48) == 0xFFFDU)
 #define R8E_IS_UNDEFINED(v)  ((v) == R8E_UNDEFINED)
 #define R8E_IS_NULL(v)       ((v) == R8E_NULL)
 #define R8E_IS_TRUE(v)       ((v) == R8E_TRUE)
 #define R8E_IS_FALSE(v)      ((v) == R8E_FALSE)
 #define R8E_IS_BOOLEAN(v)    ((v) == R8E_TRUE || (v) == R8E_FALSE)
-#define R8E_IS_SYMBOL(v)     (((v) >> 32) == 0xFFFB0000U)
-#define R8E_IS_ATOM(v)       (((v) >> 32) == 0xFFFC0000U)
+#define R8E_IS_SYMBOL(v)     (((v) >> 48) == 0xFFFBU)
+#define R8E_IS_ATOM(v)       (((v) >> 48) == 0xFFFCU)
 #define R8E_IS_NULLISH(v)    (R8E_IS_UNDEFINED(v) || R8E_IS_NULL(v))
 #define R8E_IS_NUMBER(v)     (R8E_IS_DOUBLE(v) || R8E_IS_INT32(v))
 

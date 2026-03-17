@@ -39,8 +39,8 @@
 typedef uint64_t R8EValue;
 
 /* Tag constants */
-#define R8E_TAG_INT32       0xFFF80000U
-#define R8E_TAG_POINTER     0xFFF90000U
+#define R8E_TAG_INT32       0xFFF8U
+#define R8E_TAG_POINTER     0xFFF9U
 #define R8E_TAG_SPECIAL     0xFFFAU
 #define R8E_TAG_SYMBOL      0xFFFBU
 #define R8E_TAG_ATOM        0xFFFCU
@@ -54,8 +54,8 @@ typedef uint64_t R8EValue;
 
 /* Type check macros */
 #define R8E_IS_DOUBLE(v)      ((v) < 0xFFF8000000000000ULL)
-#define R8E_IS_INT32(v)       (((v) >> 32) == R8E_TAG_INT32)
-#define R8E_IS_POINTER(v)     (((v) >> 32) == R8E_TAG_POINTER)
+#define R8E_IS_INT32(v)       (((v) >> 48) == R8E_TAG_INT32)
+#define R8E_IS_POINTER(v)     (((v) >> 48) == R8E_TAG_POINTER)
 #define R8E_IS_UNDEFINED(v)   ((v) == R8E_UNDEFINED)
 #define R8E_IS_NULL(v)        ((v) == R8E_NULL)
 #define R8E_IS_TRUE(v)        ((v) == R8E_TRUE)

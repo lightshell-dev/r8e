@@ -67,7 +67,7 @@ typedef uint64_t R8EValue;
 #define R8E_TRUE       0xFFFA000000000002ULL
 #define R8E_FALSE      0xFFFA000000000003ULL
 
-#define R8E_IS_POINTER(v)    (((v) >> 32) == 0xFFF90000U)
+#define R8E_IS_POINTER(v)    (((v) >> 48) == 0xFFF9U)
 
 static inline void *r8e_get_pointer(uint64_t v) {
     return (void *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);

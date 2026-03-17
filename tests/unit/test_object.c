@@ -95,8 +95,8 @@ typedef uint64_t R8EValue;
 #define R8E_FALSE      0xFFFA000000000003ULL
 
 #define R8E_IS_DOUBLE(v)     ((v) < 0xFFF8000000000000ULL)
-#define R8E_IS_INT32(v)      (((v) >> 32) == 0xFFF80000U)
-#define R8E_IS_POINTER(v)    (((v) >> 32) == 0xFFF90000U)
+#define R8E_IS_INT32(v)      (((v) >> 48) == 0xFFF8U)
+#define R8E_IS_POINTER(v)    (((v) >> 48) == 0xFFF9U)
 
 static inline R8EValue r8e_from_int32(int32_t i) {
     return 0xFFF8000000000000ULL | (uint64_t)(uint32_t)i;

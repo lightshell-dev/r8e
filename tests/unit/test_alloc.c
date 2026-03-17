@@ -16,7 +16,7 @@
 /* NaN-boxing definitions needed for r8e_value_validate */
 typedef uint64_t R8EValue;
 #define R8E_IS_DOUBLE(v)      ((v) < 0xFFF8000000000000ULL)
-#define R8E_IS_INT32(v)       (((v) >> 32) == 0xFFF80000U)
+#define R8E_IS_INT32(v)       (((v) >> 48) == 0xFFF8U)
 
 static inline double r8e_get_double(R8EValue v) {
     double d; memcpy(&d, &v, 8); return d;

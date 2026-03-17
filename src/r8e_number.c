@@ -35,8 +35,8 @@
 
 typedef uint64_t R8EValue;
 
-#define R8E_TAG_INT32       0xFFF80000U
-#define R8E_TAG_POINTER     0xFFF90000U
+#define R8E_TAG_INT32       0xFFF8U
+#define R8E_TAG_POINTER     0xFFF9U
 #define R8E_TAG_INLINE_STR  0xFFFDU
 
 #define R8E_UNDEFINED  0xFFFA000000000000ULL
@@ -45,8 +45,8 @@ typedef uint64_t R8EValue;
 #define R8E_FALSE      0xFFFA000000000003ULL
 
 #define R8E_IS_DOUBLE(v)      ((v) < 0xFFF8000000000000ULL)
-#define R8E_IS_INT32(v)       (((v) >> 32) == R8E_TAG_INT32)
-#define R8E_IS_POINTER(v)     (((v) >> 32) == R8E_TAG_POINTER)
+#define R8E_IS_INT32(v)       (((v) >> 48) == R8E_TAG_INT32)
+#define R8E_IS_POINTER(v)     (((v) >> 48) == R8E_TAG_POINTER)
 #define R8E_IS_INLINE_STR(v)  (((v) >> 48) == R8E_TAG_INLINE_STR)
 
 static inline double r8e_get_double(R8EValue v) {

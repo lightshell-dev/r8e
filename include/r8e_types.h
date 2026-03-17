@@ -69,12 +69,12 @@ extern "C" {
 /* --- Core value type --- */
 typedef uint64_t R8EValue;
 
-/* --- Tag constants --- */
-#define R8E_TAG_INT32       0xFFF80000U
-#define R8E_TAG_POINTER     0xFFF90000U
+/* --- Tag constants (16-bit tags in bits 48-63, 48-bit payload) --- */
+#define R8E_TAG_INT32       0xFFF8U
+#define R8E_TAG_POINTER     0xFFF9U
 #define R8E_TAG_SPECIAL     0xFFFAU
-#define R8E_TAG_SYMBOL      0xFFFB0000U
-#define R8E_TAG_ATOM        0xFFFC0000U
+#define R8E_TAG_SYMBOL      0xFFFBU
+#define R8E_TAG_ATOM        0xFFFCU
 #define R8E_TAG_INLINE_STR  0xFFFDU
 
 /* --- Singleton constants --- */
@@ -91,20 +91,20 @@ typedef uint64_t R8EValue;
 /* Doubles occupy everything below the tag boundary */
 #define R8E_IS_DOUBLE(v)    ((v) < 0xFFF8000000000000ULL)
 
-/* Int32: upper 32 bits == 0xFFF80000 */
-#define R8E_IS_INT32(v)     (((v) >> 32) == R8E_TAG_INT32)
+/* Int32: upper 16 bits == 0xFFF8, payload in bits 0-31 */
+#define R8E_IS_INT32(v)     (((v) >> 48) == R8E_TAG_INT32)
 
-/* Heap pointer: upper 32 bits == 0xFFF90000 */
-#define R8E_IS_POINTER(v)   (((v) >> 32) == R8E_TAG_POINTER)
+/* Heap pointer: upper 16 bits == 0xFFF9, payload in bits 0-47 */
+#define R8E_IS_POINTER(v)   (((v) >> 48) == R8E_TAG_POINTER)
 
 /* Inline short string: upper 16 bits == 0xFFFD */
 #define R8E_IS_INLINE_STR(v) (((v) >> 48) == R8E_TAG_INLINE_STR)
 
-/* Symbol: upper 32 bits == 0xFFFB0000 */
-#define R8E_IS_SYMBOL(v)    (((v) >> 32) == R8E_TAG_SYMBOL)
+/* Symbol: upper 16 bits == 0xFFFB, payload in bits 0-31 */
+#define R8E_IS_SYMBOL(v)    (((v) >> 48) == R8E_TAG_SYMBOL)
 
-/* Atom: upper 32 bits == 0xFFFC0000 */
-#define R8E_IS_ATOM(v)      (((v) >> 32) == R8E_TAG_ATOM)
+/* Atom: upper 16 bits == 0xFFFC, payload in bits 0-31 */
+#define R8E_IS_ATOM(v)      (((v) >> 48) == R8E_TAG_ATOM)
 
 /* Special values */
 #define R8E_IS_UNDEFINED(v) ((v) == R8E_UNDEFINED)

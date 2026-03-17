@@ -43,8 +43,8 @@ typedef uint64_t R8EValue;
 
 /* NaN-boxing type checks */
 #define R8E_IS_DOUBLE(v)     ((v) < 0xFFF8000000000000ULL)
-#define R8E_IS_INT32(v)      (((v) >> 32) == 0xFFF80000U)
-#define R8E_IS_POINTER(v)    (((v) >> 32) == 0xFFF90000U)
+#define R8E_IS_INT32(v)      (((v) >> 48) == 0xFFF8U)
+#define R8E_IS_POINTER(v)    (((v) >> 48) == 0xFFF9U)
 #define R8E_IS_INLINE_STR(v) (((v) >> 48) == 0xFFFDU)
 #define R8E_IS_UNDEFINED(v)  ((v) == R8E_UNDEFINED)
 #define R8E_IS_NULL(v)       ((v) == R8E_NULL)
