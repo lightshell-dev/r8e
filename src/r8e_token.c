@@ -2233,7 +2233,7 @@ const char *r8e_token_name(R8ETokenType type)
     case R8E_TOK_QUESTION:       return "?";
     case R8E_TOK_QUESTION_DOT:   return "?.";
     case R8E_TOK_NULLISH:        return "??";
-    case R8E_TOK_NULLISH_ASSIGN: return "??=";
+    case R8E_TOK_NULLISH_ASSIGN: return "?" "?=";
     case R8E_TOK_ARROW:          return "=>";
 
     case R8E_TOK_PLUS:           return "+";

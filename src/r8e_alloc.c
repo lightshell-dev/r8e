@@ -821,7 +821,7 @@ bool r8e_value_validate(R8EValue v) {
     case 0xFFFD: /* Inline string */
         {
             int len = (int)((v >> 45) & 0x7);
-            return len <= 7;
+            return len <= 6;
         }
 
     default:

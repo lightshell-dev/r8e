@@ -78,7 +78,7 @@ static inline uint64_t r8e_from_pointer(void *p) {
     return 0xFFF9000000000000ULL | (uint64_t)(uintptr_t)p;
 }
 static inline R8EValue r8e_from_inline_str(const char *s, int len) {
-    if (len < 0 || len > 7) return R8E_UNDEFINED;
+    if (len < 0 || len > 6) return R8E_UNDEFINED;
     uint64_t v = 0xFFFD000000000000ULL;
     v |= ((uint64_t)(unsigned)len << 45);
     for (int i = 0; i < len; i++) {
@@ -121,7 +121,6 @@ typedef struct R8EHeapString {
     uint32_t hash;
     uint32_t byte_length;
     uint32_t char_length;
-    void    *offset_table;
     char     data[];
 } R8EHeapString;
 
@@ -237,10 +236,10 @@ static struct {
     char    data[64];
     uint32_t len;
 } g_atoms[STUB_MAX_ATOMS];
-static uint32_t g_atom_count = 0;
+static uint32_t g_atom_count = 1;  /* start at 1; atom 0 = R8E_ATOM_EMPTY */
 
 static void stub_atom_reset(void) {
-    g_atom_count = 0;
+    g_atom_count = 1;
     memset(g_atoms, 0, sizeof(g_atoms));
 }
 

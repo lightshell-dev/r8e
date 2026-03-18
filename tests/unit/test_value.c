@@ -74,7 +74,7 @@ static inline R8EValue r8e_from_boolean(bool b) {
 static inline R8EValue r8e_from_inline_str(const char *s, int len) {
     R8EValue v = 0xFFFD000000000000ULL;
     v |= ((uint64_t)(unsigned)len << 45);
-    for (int i = 0; i < len && i < 7; i++)
+    for (int i = 0; i < len && i < 6; i++)
         v |= ((uint64_t)(uint8_t)s[i] << (38 - i * 7));
     return v;
 }
@@ -243,9 +243,9 @@ TEST(inline_str_empty) {
 }
 
 TEST(inline_str_short) {
-    const char *strings[] = { "a", "hi", "foo", "test", "hello", "abcdef", "1234567" };
-    int lengths[] = { 1, 2, 3, 4, 5, 6, 7 };
-    for (int i = 0; i < 7; i++) {
+    const char *strings[] = { "a", "hi", "foo", "test", "hello", "abcdef" };
+    int lengths[] = { 1, 2, 3, 4, 5, 6 };
+    for (int i = 0; i < 6; i++) {
         R8EValue v = r8e_from_inline_str(strings[i], lengths[i]);
         ASSERT_TRUE(R8E_IS_INLINE_STR(v));
         ASSERT_EQ_INT(r8e_get_inline_str_len(v), lengths[i]);
@@ -638,11 +638,11 @@ TEST(atom_encoding) {
  * ========================================================================= */
 
 TEST(inline_str_all_lengths) {
-    /* Test every valid length from 0 to 7 */
+    /* Test every valid length from 0 to 6 */
     const char *test_strings[] = {
-        "", "a", "ab", "abc", "abcd", "abcde", "abcdef", "abcdefg"
+        "", "a", "ab", "abc", "abcd", "abcde", "abcdef"
     };
-    for (int len = 0; len <= 7; len++) {
+    for (int len = 0; len <= 6; len++) {
         R8EValue v = r8e_from_inline_str(test_strings[len], len);
         ASSERT_TRUE(R8E_IS_INLINE_STR(v));
         ASSERT_EQ_INT(r8e_get_inline_str_len(v), len);

@@ -66,7 +66,7 @@ static inline R8EValue r8e_from_double(double d) {
     return v;
 }
 static inline R8EValue r8e_from_inline_str(const char *s, int len) {
-    if (len < 0 || len > 7) return R8E_UNDEFINED;
+    if (len < 0 || len > 6) return R8E_UNDEFINED;
     uint64_t v = 0xFFFD000000000000ULL;
     v |= ((uint64_t)(unsigned)len << 45);
     for (int i = 0; i < len; i++) {
@@ -525,17 +525,18 @@ TEST(arena_alloc_basic) {
 }
 
 TEST(arena_alloc_exhaustion) {
-    /* Create a small arena */
+    /* Create a small arena (may be 16KB on ARM) */
     R8ESecureArena *arena = r8e_secure_arena_create(4096, 0);
     ASSERT_NOT_NULL(arena);
 
-    /* Allocate until exhausted */
-    void *p = r8e_secure_arena_alloc(arena, 4096);
-    /* Might succeed or fail depending on alignment, but the next should fail */
-    if (p) {
-        void *p2 = r8e_secure_arena_alloc(arena, 4096);
-        ASSERT_NULL(p2);
+    /* Drain in a loop until exhaustion */
+    for (int i = 0; i < 64; i++) {
+        void *p = r8e_secure_arena_alloc(arena, 1024);
+        if (!p) break;
     }
+    /* After draining, allocation should fail */
+    void *final = r8e_secure_arena_alloc(arena, 1024);
+    ASSERT_NULL(final);
 
     r8e_secure_arena_destroy(arena);
 }
@@ -662,7 +663,7 @@ TEST(validate_special_invalid_payload) {
     R8EValue bad = 0xFFFA000000000004ULL;
     ASSERT_FALSE(r8e_validate_value(bad));
 
-    R8EValue bad2 = 0xFFFA000000000FFULL;
+    R8EValue bad2 = 0xFFFA0000000000FFULL;
     ASSERT_FALSE(r8e_validate_value(bad2));
 }
 

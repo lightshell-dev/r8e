@@ -65,7 +65,7 @@ static inline R8EValue r8e_from_double(double d) {
     return v;
 }
 static inline R8EValue r8e_from_inline_str(const char *s, int len) {
-    if (len < 0 || len > 7) return R8E_UNDEFINED;
+    if (len < 0 || len > 6) return R8E_UNDEFINED;
     uint64_t v = 0xFFFD000000000000ULL;
     v |= ((uint64_t)(unsigned)len << 45);
     for (int i = 0; i < len; i++) {

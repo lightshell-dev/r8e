@@ -341,7 +341,7 @@ uint32_t r8e_utf8_strlen(const char *data, uint32_t byte_len) {
         int n = r8e_utf8_decode(p, (uint32_t)(end - p), &cp);
         if (n == 0) break;
         p += n;
-        count += (cp > 0xFFFF) ? 2 : 1;
+        count++;
     }
     return count;
 }

@@ -116,7 +116,7 @@ static inline R8EValue r8e_from_boolean(bool b) {
 static inline R8EValue r8e_from_inline_str(const char *s, int len) {
     R8EValue v = 0xFFFD000000000000ULL;
     v |= ((uint64_t)(unsigned)len << 45);
-    for (int i = 0; i < len && i < 7; i++) {
+    for (int i = 0; i < len && i < 6; i++) {
         v |= ((uint64_t)(uint8_t)s[i] << (38 - i * 7));
     }
     return v;
@@ -531,8 +531,8 @@ R8EValue r8e_to_boolean(R8EValue val) {
  */
 static R8EValue make_heap_string(R8EContext *ctx, const char *data,
                                  uint32_t len) {
-    /* Try inline string first (0-7 ASCII chars) */
-    if (len <= 7) {
+    /* Try inline string first (0-6 ASCII chars) */
+    if (len <= 6) {
         bool all_ascii = true;
         for (uint32_t i = 0; i < len; i++) {
             if ((uint8_t)data[i] > 127) {
@@ -935,7 +935,7 @@ R8EValue r8e_typeof(R8EValue val) {
         return r8e_from_inline_str("object", 6); /* typeof null === "object" */
     }
     if (R8E_IS_BOOLEAN(val)) {
-        return r8e_from_inline_str("boolean", 7);
+        return make_heap_string(NULL, "boolean", 7);
     }
     if (R8E_IS_INT32(val) || R8E_IS_DOUBLE(val)) {
         return r8e_from_inline_str("number", 6);

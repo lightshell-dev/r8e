@@ -80,7 +80,7 @@ static inline R8EValue r8e_from_boolean(bool b) {
 static inline R8EValue r8e_from_inline_str(const char *s, int len) {
     R8EValue v = 0xFFFD000000000000ULL;
     v |= ((uint64_t)(unsigned)len << 45);
-    for (int i = 0; i < len && i < 7; i++)
+    for (int i = 0; i < len && i < 6; i++)
         v |= ((uint64_t)(uint8_t)s[i] << (38 - i * 7));
     return v;
 }
@@ -546,7 +546,7 @@ extern bool      r8e_string_ends_with(R8EContext *ctx, R8EString *s,
 static R8EValue make_heap_string(R8EContext *ctx, const char *data,
                                   uint32_t len) {
     (void)ctx;
-    if (len <= 7) {
+    if (len <= 6) {
         bool all_ascii = true;
         for (uint32_t i = 0; i < len; i++) {
             if ((uint8_t)data[i] > 127) { all_ascii = false; break; }

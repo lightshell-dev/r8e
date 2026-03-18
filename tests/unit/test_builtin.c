@@ -84,7 +84,7 @@ static inline R8EValue r8e_from_boolean(bool b) {
 static inline R8EValue r8e_from_inline_str(const char *s, int len) {
     R8EValue v = 0xFFFD000000000000ULL;
     v |= ((uint64_t)(unsigned)len << 45);
-    for (int i = 0; i < len && i < 7; i++)
+    for (int i = 0; i < len && i < 6; i++)
         v |= ((uint64_t)(uint8_t)s[i] << (38 - i * 7));
     return v;
 }
@@ -255,17 +255,17 @@ static void test_builtin_inline_str_empty(void) {
     ASSERT_EQ_STR(buf, "");
 }
 
-/* Inline string of max length (7 chars) */
+/* Inline string of max length (6 chars) */
 static void test_builtin_inline_str_max_len(void) {
-    R8EValue v = r8e_from_inline_str("abcdefg", 7);
+    R8EValue v = r8e_from_inline_str("abcdef", 6);
     ASSERT_TRUE(R8E_IS_INLINE_STR(v));
-    ASSERT_EQ_INT(r8e_get_inline_str_len(v), 7);
+    ASSERT_EQ_INT(r8e_get_inline_str_len(v), 6);
 
     char buf[8];
     int len;
     r8e_get_inline_str(v, buf, &len);
-    ASSERT_EQ_INT(len, 7);
-    ASSERT_EQ_STR(buf, "abcdefg");
+    ASSERT_EQ_INT(len, 6);
+    ASSERT_EQ_STR(buf, "abcdef");
 }
 
 /* Inline string with single char */

@@ -365,13 +365,13 @@ static inline int r8e_tier0_count(const R8EObjTier0 *obj) {
 }
 
 static R8EValue r8e_tier0_get(const R8EObjTier0 *obj, uint32_t key) {
-    if (obj->key0 == key)
+    if (key != R8E_ATOM_EMPTY && obj->key0 == key)
         return obj->val0;
     return R8E_UNDEFINED;
 }
 
 static bool r8e_tier0_has(const R8EObjTier0 *obj, uint32_t key) {
-    return (obj->key0 == key);
+    return (key != R8E_ATOM_EMPTY && obj->key0 == key);
 }
 
 static uint8_t r8e_tier0_get_desc(const R8EObjTier0 *obj, uint32_t key) {

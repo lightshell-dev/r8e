@@ -1124,11 +1124,12 @@ TEST(canary_multiple_locations) {
  * ========================================================================= */
 
 TEST(value_validate_inline_strings) {
-    /* Valid inline string: length 0-7 */
+    /* Valid inline string: length 0-6 */
     /* Tag 0xFFFD, length in bits [47:45] */
     ASSERT_TRUE(r8e_value_validate(0xFFFD000000000000ULL));  /* len=0 */
     ASSERT_TRUE(r8e_value_validate(0xFFFD200000000000ULL));  /* len=1 */
-    ASSERT_TRUE(r8e_value_validate(0xFFFDE00000000000ULL));  /* len=7 */
+    ASSERT_TRUE(r8e_value_validate(0xFFFDC00000000000ULL));  /* len=6 */
+    ASSERT_FALSE(r8e_value_validate(0xFFFDE00000000000ULL)); /* len=7 invalid */
 }
 
 TEST(value_validate_symbols) {

@@ -348,7 +348,7 @@ bool r8e_validate_value(R8EValue val) {
         /* Inline string: validate length and characters */
         {
             int len = (int)((val >> 45) & 0x7);
-            if (len > 7) return false;
+            if (len > 6) return false;
             /* Validate each character is ASCII (7-bit) */
             for (int i = 0; i < len; i++) {
                 uint8_t ch = (uint8_t)((val >> (38 - i * 7)) & 0x7F);

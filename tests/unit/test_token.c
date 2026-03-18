@@ -730,7 +730,7 @@ static void test_nullish_and_optional(void) {
     r8e_lexer_next(&lex, &tok);
     ASSERT_EQ(tok.type, R8E_TOK_NULLISH);
 
-    init_lex(&lex, "??=");
+    init_lex(&lex, "?" "?=");
     r8e_lexer_next(&lex, &tok);
     ASSERT_EQ(tok.type, R8E_TOK_NULLISH_ASSIGN);
 

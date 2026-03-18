@@ -1262,7 +1262,7 @@ static R8EValue r8e_builtin_error_toString(void *raw_ctx,
     /* If message is empty, return just the type name */
     if (!err->message || err->message[0] == '\0') {
         int len = (int)strlen(type_name);
-        if (len <= 7) {
+        if (len <= 6) {
             /* Fits in inline short string */
             uint64_t v = 0xFFFD000000000000ULL;
             v |= ((uint64_t)(unsigned)len << 45);
@@ -1318,7 +1318,7 @@ static R8EValue r8e_error_constructor_common(void *raw_ctx,
         /* Check for inline string */
         if (R8E_IS_INLINE_STR(argv[0])) {
             int len = (int)((argv[0] >> 45) & 0x7);
-            for (int i = 0; i < len && i < 7; i++) {
+            for (int i = 0; i < len && i < 6; i++) {
                 inline_buf[i] = (char)((argv[0] >> (38 - i * 7)) & 0x7F);
             }
             inline_buf[len] = '\0';
@@ -1424,7 +1424,7 @@ static R8EValue r8e_builtin_aggregate_error_ctor(void *raw_ctx,
     if (argc > 1 && !R8E_IS_UNDEFINED(argv[1])) {
         if (R8E_IS_INLINE_STR(argv[1])) {
             int len = (int)((argv[1] >> 45) & 0x7);
-            for (int i = 0; i < len && i < 7; i++) {
+            for (int i = 0; i < len && i < 6; i++) {
                 inline_buf[i] = (char)((argv[1] >> (38 - i * 7)) & 0x7F);
             }
             inline_buf[len] = '\0';
@@ -1706,7 +1706,7 @@ R8EValue r8e_error_get_prop(const R8EErrorObject *err, uint32_t prop_atom) {
             /* Empty string */
             return 0xFFFD000000000000ULL;
         }
-        if (err->message_len <= 7) {
+        if (err->message_len <= 6) {
             /* Try inline encoding */
             uint64_t v = 0xFFFD000000000000ULL;
             v |= ((uint64_t)(unsigned)err->message_len << 45);

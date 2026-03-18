@@ -1926,7 +1926,7 @@ static R8EValue r8e_builtin_function_toString(void *raw_ctx,
         /* Fallback: return a simple representation */
         const char *fallback = "function () { [native code] }";
         int len = (int)strlen(fallback);
-        if (len <= 7) {
+        if (len <= 6) {
             /* Fits in inline short string */
             uint64_t v = 0xFFFD000000000000ULL;
             v |= ((uint64_t)(unsigned)len << 45);
@@ -1944,7 +1944,7 @@ static R8EValue r8e_builtin_function_toString(void *raw_ctx,
     r8e_function_to_string(this_val, buf, (int)sizeof(buf));
 
     int len = (int)strlen(buf);
-    if (len <= 7) {
+    if (len <= 6) {
         uint64_t v = 0xFFFD000000000000ULL;
         v |= ((uint64_t)(unsigned)len << 45);
         for (int i = 0; i < len; i++) {

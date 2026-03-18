@@ -554,6 +554,16 @@ void r8e_suspect_add(R8EContext *ctx, R8EGCHeader *obj) {
     sl->items[sl->count++] = obj;
 }
 
+static void r8e_suspect_remove(R8EContext *ctx, R8EGCHeader *obj) {
+    R8ESuspectList *sl = &ctx->gc.suspects;
+    for (uint32_t i = 0; i < sl->count; i++) {
+        if (sl->items[i] == obj) {
+            sl->items[i] = sl->items[--sl->count];
+            return;
+        }
+    }
+}
+
 /* =========================================================================
  * Object reference traversal
  *
@@ -862,6 +872,9 @@ void r8e_release(R8EContext *ctx, R8EValue val) {
 
     bool is_dead = r8e_gc_dec_refcount(ctx, hdr);
     if (is_dead) {
+        if (hdr->flags & R8E_GC_ON_SUSPECT) {
+            r8e_suspect_remove(ctx, hdr);
+        }
         hdr->flags &= ~R8E_GC_ON_SUSPECT;
         r8e_release_children(ctx, hdr);
         r8e_free_by_kind(ctx, hdr);

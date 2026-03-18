@@ -1025,7 +1025,7 @@ R8EValue r8e_builtin_regexp_toString(R8EContext *ctx, R8EValue this_val,
     if (re->re_flags & R8E_RE_STICKY)     fb[fi++] = 'y';
 
     uint32_t tl = 1 + re->pattern_len + 1 + (uint32_t)fi;
-    if (tl <= 7) {
+    if (tl <= 6) {
         char buf[8]; int p = 0;
         buf[p++] = '/';
         memcpy(buf + p, re->pattern, re->pattern_len); p += (int)re->pattern_len;
@@ -1137,7 +1137,7 @@ R8EValue r8e_regexp_string_replace(R8EContext *ctx, R8EValue str,
     out[olen] = '\0';
     re->last_index = saved;
 
-    if (olen <= 7) {
+    if (olen <= 6) {
         bool ascii = true;
         for (int32_t i = 0; i < olen; i++) if ((uint8_t)out[i] > 127) { ascii = false; break; }
         if (ascii) { R8EValue v = make_inline(out, olen); free(out); return v; }
@@ -1184,7 +1184,7 @@ R8EValue r8e_regexp_get_prop(R8ERegExp *re, uint32_t atom) {
     if (!re) return R8E_UNDEFINED;
     switch (atom) {
     case R8E_ATOM_source:
-        if (re->pattern_len <= 7) {
+        if (re->pattern_len <= 6) {
             bool ok = true;
             for (uint32_t i = 0; i < re->pattern_len; i++) if ((uint8_t)re->pattern[i] > 127) { ok = false; break; }
             if (ok) return make_inline(re->pattern, (int)re->pattern_len);

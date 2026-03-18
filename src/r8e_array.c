@@ -745,21 +745,29 @@ uint32_t r8e_array_unshift(R8EContext *ctx, R8EArray *arr,
  * Returns 0 on success, -1 on failure.
  */
 int r8e_array_splice(R8EContext *ctx, R8EArray *arr,
-                      uint32_t start, uint32_t delete_count,
+                      int32_t start, int32_t delete_count,
                       const R8EValue *items, uint32_t insert_count,
-                      R8EValue *out_deleted) {
+                      R8EArray *removed) {
+    /* Resolve negative start index */
+    if (start < 0) {
+        start = (int32_t)arr->length + start;
+        if (start < 0) start = 0;
+    }
+
     /* Clamp start */
-    if (start > arr->length)
-        start = arr->length;
+    if ((uint32_t)start > arr->length)
+        start = (int32_t)arr->length;
 
     /* Clamp delete_count */
-    if (delete_count > arr->length - start)
-        delete_count = arr->length - start;
+    if (delete_count < 0)
+        delete_count = 0;
+    if ((uint32_t)delete_count > arr->length - (uint32_t)start)
+        delete_count = (int32_t)(arr->length - (uint32_t)start);
 
     /* Save deleted elements if requested */
-    if (out_deleted) {
-        for (uint32_t i = 0; i < delete_count; i++)
-            out_deleted[i] = r8e_array_get(ctx, arr, start + i);
+    if (removed) {
+        for (int32_t i = 0; i < delete_count; i++)
+            r8e_array_push(ctx, removed, r8e_array_get(ctx, arr, (uint32_t)start + (uint32_t)i));
     }
 
     int32_t delta = (int32_t)insert_count - (int32_t)delete_count;
@@ -776,9 +784,9 @@ int r8e_array_splice(R8EContext *ctx, R8EArray *arr,
             uint32_t idx = st->entries[i].index;
             if (idx == R8E_SPARSE_EMPTY_KEY) continue;
 
-            if (idx < start) {
+            if (idx < (uint32_t)start) {
                 r8e_sparse_set(ctx, new_st, idx, st->entries[i].val);
-            } else if (idx >= start + delete_count) {
+            } else if (idx >= (uint32_t)start + (uint32_t)delete_count) {
                 /* Shift by delta */
                 r8e_sparse_set(ctx, new_st, (uint32_t)((int32_t)idx + delta),
                                st->entries[i].val);
@@ -788,7 +796,7 @@ int r8e_array_splice(R8EContext *ctx, R8EArray *arr,
 
         /* Insert new elements */
         for (uint32_t i = 0; i < insert_count; i++)
-            r8e_sparse_set(ctx, new_st, start + i, items[i]);
+            r8e_sparse_set(ctx, new_st, (uint32_t)start + i, items[i]);
 
         r8e_sparse_destroy(ctx, st);
         arr->sparse = new_st;
@@ -801,16 +809,16 @@ int r8e_array_splice(R8EContext *ctx, R8EArray *arr,
         }
 
         /* Update dense_count for deleted elements */
-        for (uint32_t i = start; i < start + delete_count && i < arr->capacity; i++) {
+        for (uint32_t i = (uint32_t)start; i < (uint32_t)start + (uint32_t)delete_count && i < arr->capacity; i++) {
             if (arr->elements[i] != R8E_UNDEFINED)
                 arr->dense_count--;
         }
 
         /* Shift tail */
-        uint32_t tail_start = start + delete_count;
+        uint32_t tail_start = (uint32_t)start + (uint32_t)delete_count;
         uint32_t tail_len = (arr->length > tail_start) ? arr->length - tail_start : 0;
         if (tail_len > 0 && delta != 0) {
-            memmove(arr->elements + start + insert_count,
+            memmove(arr->elements + (uint32_t)start + insert_count,
                     arr->elements + tail_start,
                     sizeof(R8EValue) * tail_len);
         }
@@ -823,7 +831,7 @@ int r8e_array_splice(R8EContext *ctx, R8EArray *arr,
 
         /* Insert new elements */
         for (uint32_t i = 0; i < insert_count; i++) {
-            arr->elements[start + i] = items[i];
+            arr->elements[(uint32_t)start + i] = items[i];
             if (items[i] != R8E_UNDEFINED)
                 arr->dense_count++;
         }
@@ -1003,20 +1011,9 @@ R8EArray *r8e_array_filter(R8EContext *ctx, const R8EArray *arr,
  * r8e_array_reduce - Reduce the array to a single value (left-to-right).
  */
 R8EValue r8e_array_reduce(R8EContext *ctx, R8EArray *arr,
-                           R8EArrayReduceCallback fn, R8EValue initial,
-                           bool has_initial) {
-    R8EValue acc;
-    uint32_t start_idx;
-
-    if (has_initial) {
-        acc = initial;
-        start_idx = 0;
-    } else {
-        if (arr->length == 0)
-            return R8E_UNDEFINED;  /* TypeError in real JS */
-        acc = r8e_array_get(ctx, arr, 0);
-        start_idx = 1;
-    }
+                           R8EArrayReduceCallback fn, R8EValue initial) {
+    R8EValue acc = initial;
+    uint32_t start_idx = 0;
 
     for (uint32_t i = start_idx; i < arr->length; i++) {
         R8EValue val = r8e_array_get(ctx, arr, i);

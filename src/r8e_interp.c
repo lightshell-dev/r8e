@@ -657,7 +657,7 @@ static R8EValue r8e_string_concat(R8EInterpContext *ctx,
     uint32_t total = len_a + len_b;
 
     /* Try inline if result fits */
-    if (total <= 7) {
+    if (total <= 6) {
         char tmp[8];
         memcpy(tmp, sa, len_a);
         memcpy(tmp + len_a, sb, len_b);
@@ -716,7 +716,7 @@ static void r8e_interp_throw_type_error(R8EInterpContext *ctx,
                                          const char *msg) {
     /* Simplified: store message as inline string or heap string */
     size_t len = strlen(msg);
-    if (len <= 7) {
+    if (len <= 6) {
         r8e_interp_throw(ctx, (R8EValue)0xFFFD000000000000ULL); /* empty inline */
     }
     /* Create a heap string for the error message */

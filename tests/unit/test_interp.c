@@ -384,7 +384,7 @@ static void test_interp_jump_if_false_not_taken(void) {
 static void test_interp_jump_if_false_taken(void) {
     uint8_t bc[] = {
         OP_PUSH_FALSE,         /* 0 */
-        OP_JUMP_IF_FALSE8, 2,  /* 1,2 -> skip 2 bytes if false */
+        OP_JUMP_IF_FALSE8, 4,  /* 1,2 -> skip 4 bytes if false */
         OP_PUSH_INT8, 1,       /* 3,4 */
         OP_RETURN,             /* 5 */
         OP_PUSH_INT8, 2,       /* 6,7 */
@@ -635,7 +635,7 @@ static void test_interp_check_limits_fuel(void) {
         OP_PUSH_INT8, 1,       /* 7,8 */
         OP_ADD,                /* 9 */
         OP_STORE_LOCAL, 0,     /* 10,11 */
-        OP_JUMP8, (uint8_t)(-(int8_t)8), /* 12,13 -> jump back to offset 4 */
+        OP_JUMP8, (uint8_t)(-(int8_t)9), /* 12,13 -> jump back to offset 4 */
     };
 
     R8EInterpContext *ctx = r8e_interp_context_new();
@@ -693,7 +693,7 @@ static void test_interp_push_int16(void) {
 /* Unconditional JUMP8 */
 static void test_interp_jump8(void) {
     uint8_t bc[] = {
-        OP_JUMP8, 2,           /* 0,1 -> skip 2 bytes */
+        OP_JUMP8, 3,           /* 0,1 -> skip 3 bytes */
         OP_PUSH_INT8, 1,       /* 2,3 -> skipped */
         OP_PUSH_INT8, 42,      /* 4,5 -> target */
         OP_RETURN              /* 6 */
@@ -974,7 +974,7 @@ static void test_interp_seq_diff_types(void) {
 static void test_interp_jump_if_true_taken(void) {
     uint8_t bc[] = {
         OP_PUSH_TRUE,           /* 0 */
-        OP_JUMP_IF_TRUE8, 2,   /* 1,2 -> skip 2 bytes */
+        OP_JUMP_IF_TRUE8, 3,   /* 1,2 -> skip 3 bytes */
         OP_PUSH_INT8, 1,        /* 3,4 -> skipped */
         OP_PUSH_INT8, 42,       /* 5,6 -> target */
         OP_RETURN                /* 7 */

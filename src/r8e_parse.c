@@ -585,7 +585,7 @@ static void parse_primary_expr(R8EParser *p)
         uint32_t len = p->cur.str_val.len;
         r8e_advance(p);
         /* Try inline short string */
-        if (len <= 7) {
+        if (len <= 6) {
             bool all_ascii = true;
             for (uint32_t i = 0; i < len; i++) {
                 if ((uint8_t)str[i] > 127) { all_ascii = false; break; }

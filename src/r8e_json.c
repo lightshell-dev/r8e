@@ -87,7 +87,7 @@ static inline uint64_t r8e_from_pointer(void *p) {
 }
 
 static inline R8EValue r8e_from_inline_str(const char *s, int len) {
-    if (len < 0 || len > 7) return R8E_UNDEFINED;
+    if (len < 0 || len > 6) return R8E_UNDEFINED;
     uint64_t v = 0xFFFD000000000000ULL;
     v |= ((uint64_t)(unsigned)len << 45);
     for (int i = 0; i < len; i++) {
@@ -149,7 +149,6 @@ typedef struct R8EHeapString {
     uint32_t hash;
     uint32_t byte_length;
     uint32_t char_length;
-    void    *offset_table;
     char     data[];
 } R8EHeapString;
 
@@ -211,9 +210,21 @@ extern void     r8e_arr_set(R8EContext *ctx, void *arr, uint32_t index,
 extern void     r8e_arr_push(R8EContext *ctx, void *arr, R8EValue val);
 
 /* String */
-extern R8EValue r8e_string_new(R8EContext *ctx, const char *data,
+extern void *r8e_string_new(R8EContext *ctx, const char *data,
                                 uint32_t len);
 extern const char *r8e_string_data(R8EValue v, uint32_t *out_len);
+
+/* Create a NaN-boxed string value (inline if short ASCII, heap otherwise) */
+static inline R8EValue r8e_string_val(R8EContext *ctx, const char *data,
+                                       uint32_t len) {
+    if (len <= 6) {
+        R8EValue v = r8e_from_inline_str(data, (int)len);
+        if (!R8E_IS_UNDEFINED(v)) return v;
+    }
+    void *s = r8e_string_new(ctx, data, len);
+    if (!s) return R8E_UNDEFINED;
+    return r8e_from_pointer(s);
+}
 
 /* Atom table */
 extern uint32_t r8e_atom_intern_str(R8EContext *ctx, const char *str,
@@ -802,7 +813,7 @@ static R8EValue json_parse_string_value(R8EJsonParser *p) {
 
     /* Try inline short string */
     R8EValue val;
-    if (len <= 7) {
+    if (len <= 6) {
         bool is_ascii = true;
         for (size_t i = 0; i < len; i++) {
             if ((uint8_t)data[i] > 127) { is_ascii = false; break; }
@@ -816,8 +827,8 @@ static R8EValue json_parse_string_value(R8EJsonParser *p) {
         }
     }
 
-    /* Heap string */
-    val = r8e_string_new(p->ctx, data, (uint32_t)len);
+    /* Heap string (wrap raw pointer into NaN-boxed value) */
+    val = r8e_string_val(p->ctx, data, (uint32_t)len);
     json_lex_next(&p->lex, p->ctx);
     return val;
 }
@@ -885,8 +896,13 @@ static R8EValue json_parse_object(R8EJsonParser *p) {
             return R8E_UNDEFINED;
         }
 
-        /* Set property on object */
-        r8e_obj_set(p->ctx, obj, key_atom, val);
+        /* Set property on object (may promote to a larger tier,
+         * returning a new pointer and invalidating the old one) */
+        obj = r8e_obj_set(p->ctx, obj, key_atom, val);
+        if (!obj) {
+            p->depth--;
+            return json_parse_error(p, "out of memory");
+        }
 
         /* Expect comma or closing brace */
         if (p->lex.tok == R8E_JTOK_RBRACE) {
@@ -1036,10 +1052,8 @@ static R8EValue json_reviver_walk(R8EContext *ctx, R8EValue holder,
     /* If val is an object or array, recurse */
     if (R8E_IS_POINTER(val)) {
         R8EGCHeader *hdr = (R8EGCHeader *)r8e_get_pointer(val);
-        uint32_t kind = R8E_GC_GET_KIND(hdr->flags);
 
-        if (kind == R8E_GC_KIND_ARRAY ||
-            (hdr->flags & R8E_OBJ_IS_ARRAY)) {
+        if (hdr->flags & R8E_OBJ_IS_ARRAY) {
             /* Array: iterate indices */
             uint32_t len = r8e_arr_length(ctx, r8e_get_pointer(val));
             for (uint32_t i = 0; i < len; i++) {
@@ -1053,7 +1067,7 @@ static R8EValue json_reviver_walk(R8EContext *ctx, R8EValue holder,
                     r8e_arr_set(ctx, r8e_get_pointer(val), i, new_val);
                 }
             }
-        } else if (kind == R8E_GC_KIND_OBJECT) {
+        } else {
             /* Object: iterate keys */
             uint32_t keys[256];
             uint32_t key_count = r8e_obj_keys(ctx, r8e_get_pointer(val),
@@ -1062,14 +1076,7 @@ static R8EValue json_reviver_walk(R8EContext *ctx, R8EValue holder,
                 uint32_t key_len;
                 const char *key_str = r8e_atom_get_str(ctx, keys[i],
                                                         &key_len);
-                R8EValue key_val;
-                if (key_len <= 7) {
-                    key_val = r8e_from_inline_str(key_str, (int)key_len);
-                    if (R8E_IS_UNDEFINED(key_val))
-                        key_val = r8e_string_new(ctx, key_str, key_len);
-                } else {
-                    key_val = r8e_string_new(ctx, key_str, key_len);
-                }
+                R8EValue key_val = r8e_string_val(ctx, key_str, key_len);
 
                 R8EValue new_val = json_reviver_walk(ctx, val, key_val,
                                                       reviver);
@@ -1350,17 +1357,16 @@ static bool json_is_function(R8EValue v) {
 static bool json_is_array(R8EValue v) {
     if (!R8E_IS_POINTER(v)) return false;
     R8EGCHeader *hdr = (R8EGCHeader *)r8e_get_pointer(v);
-    return (hdr->flags & R8E_OBJ_IS_ARRAY) != 0 ||
-           R8E_GC_GET_KIND(hdr->flags) == R8E_GC_KIND_ARRAY;
+    return (hdr->flags & R8E_OBJ_IS_ARRAY) != 0;
 }
 
 /* Check if value is a plain object (not array, not string, not function) */
 static bool json_is_object(R8EValue v) {
     if (!R8E_IS_POINTER(v)) return false;
+    if (json_is_string(v)) return false;
+    if (json_is_function(v)) return false;
     R8EGCHeader *hdr = (R8EGCHeader *)r8e_get_pointer(v);
-    uint32_t kind = R8E_GC_GET_KIND(hdr->flags);
-    return kind == R8E_GC_KIND_OBJECT &&
-           !(hdr->flags & R8E_OBJ_IS_ARRAY);
+    return !(hdr->flags & R8E_OBJ_IS_ARRAY);
 }
 
 /* Apply toJSON if the object has a toJSON method */
@@ -1368,9 +1374,8 @@ static R8EValue json_apply_toJSON(R8EJsonStringifier *s, R8EValue val,
                                    R8EValue key) {
     if (!R8E_IS_POINTER(val)) return val;
 
-    R8EGCHeader *hdr = (R8EGCHeader *)r8e_get_pointer(val);
-    uint32_t kind = R8E_GC_GET_KIND(hdr->flags);
-    if (kind != R8E_GC_KIND_OBJECT) return val;
+    /* Only apply toJSON on plain objects (not strings, arrays, functions) */
+    if (!json_is_object(val)) return val;
 
     R8EValue to_json = r8e_obj_get(s->ctx, r8e_get_pointer(val),
                                     R8E_ATOM_toJSON);
@@ -1512,14 +1517,7 @@ static bool json_stringify_object(R8EJsonStringifier *s, R8EValue obj) {
         const char *key_str = r8e_atom_get_str(s->ctx, key_atom,
                                                 &key_str_len);
 
-        R8EValue key_val;
-        if (key_str_len <= 7) {
-            key_val = r8e_from_inline_str(key_str, (int)key_str_len);
-            if (R8E_IS_UNDEFINED(key_val))
-                key_val = r8e_string_new(s->ctx, key_str, key_str_len);
-        } else {
-            key_val = r8e_string_new(s->ctx, key_str, key_str_len);
-        }
+        R8EValue key_val = r8e_string_val(s->ctx, key_str, key_str_len);
 
         /* Apply toJSON */
         val = json_apply_toJSON(s, val, key_val);
@@ -1618,9 +1616,10 @@ static bool json_stringify_value(R8EJsonStringifier *s, R8EValue key,
             return true;
         }
 
-        /* Array */
-        if (kind == R8E_GC_KIND_ARRAY ||
-            (hdr->flags & R8E_OBJ_IS_ARRAY)) {
+        /* Array: use the IS_ARRAY flag (bit 7) which is authoritative.
+         * The GC kind field (bits 5-7) may overlap with per-object
+         * flags (sealed, extensible) so is not reliable. */
+        if (hdr->flags & R8E_OBJ_IS_ARRAY) {
             return json_stringify_array(s, val);
         }
 
@@ -1632,10 +1631,9 @@ static bool json_stringify_value(R8EJsonStringifier *s, R8EValue key,
             return false;
         }
 
-        /* Plain object */
-        if (kind == R8E_GC_KIND_OBJECT) {
-            return json_stringify_object(s, val);
-        }
+        /* Plain object (default for heap pointers that aren't
+         * strings, arrays, or functions) */
+        return json_stringify_object(s, val);
     }
 
     /* undefined, symbol -> return false (omitted/null behavior
@@ -1794,15 +1792,7 @@ R8EValue r8e_json_stringify_full(R8EContext *ctx, R8EValue value,
     }
 
     /* Convert buffer to string value */
-    R8EValue result;
-    if (s.buf.len <= 7) {
-        result = r8e_from_inline_str(s.buf.data, (int)s.buf.len);
-        if (R8E_IS_UNDEFINED(result)) {
-            result = r8e_string_new(ctx, s.buf.data, (uint32_t)s.buf.len);
-        }
-    } else {
-        result = r8e_string_new(ctx, s.buf.data, (uint32_t)s.buf.len);
-    }
+    R8EValue result = r8e_string_val(ctx, s.buf.data, (uint32_t)s.buf.len);
 
     strbuf_free(&s.buf, ctx);
     return result;

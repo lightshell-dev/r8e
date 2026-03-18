@@ -80,7 +80,7 @@ static inline uint64_t r8e_from_pointer(void *p) {
 }
 
 static inline R8EValue r8e_from_inline_str(const char *s, int len) {
-    if (len < 0 || len > 7) return R8E_UNDEFINED;
+    if (len < 0 || len > 6) return R8E_UNDEFINED;
     uint64_t v = 0xFFFD000000000000ULL;
     v |= ((uint64_t)(unsigned)len << 45);
     for (int i = 0; i < len; i++) {
@@ -1509,7 +1509,7 @@ R8EValue r8e_import_meta(R8EContext *ctx, R8EModule *mod) {
     /* Set the 'url' property to the module specifier */
     uint32_t url_atom = r8e_atom_intern_str(ctx, "url", 3);
     R8EValue url_val;
-    if (mod->specifier_len <= 7) {
+    if (mod->specifier_len <= 6) {
         url_val = r8e_from_inline_str(mod->specifier,
                                        (int)mod->specifier_len);
         if (R8E_IS_UNDEFINED(url_val))

@@ -234,11 +234,14 @@ static inline R8EValue r8e_from_atom(uint32_t idx) {
  */
 
 /**
- * Encode a short ASCII string (up to 7 chars) inline in a NaN-boxed value.
- * Returns R8E_UNDEFINED if len > 7 or any char is non-ASCII.
+ * Encode a short ASCII string (up to 6 chars) inline in a NaN-boxed value.
+ * Returns R8E_UNDEFINED if len > 6 or any char is non-ASCII.
+ *
+ * The NaN-box payload has 45 bits (bits [44:0]). Each char uses 7 bits,
+ * so the maximum is floor(45/7) = 6 characters.
  */
 static inline R8EValue r8e_from_inline_str(const char *s, int len) {
-    if (len < 0 || len > 7) return R8E_UNDEFINED;
+    if (len < 0 || len > 6) return R8E_UNDEFINED;
     uint64_t v = 0xFFFD000000000000ULL;
     v |= ((uint64_t)(unsigned)len << 45);
     for (int i = 0; i < len; i++) {

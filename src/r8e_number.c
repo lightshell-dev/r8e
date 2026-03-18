@@ -79,7 +79,7 @@ static inline R8EValue r8e_from_pointer(void *p) {
 static inline R8EValue r8e_from_inline_str(const char *s, int len) {
     R8EValue v = 0xFFFD000000000000ULL;
     v |= ((uint64_t)(unsigned)len << 45);
-    for (int i = 0; i < len && i < 7; i++) {
+    for (int i = 0; i < len && i < 6; i++) {
         v |= ((uint64_t)(uint8_t)s[i] << (38 - i * 7));
     }
     return v;
@@ -517,13 +517,13 @@ R8EValue r8e_num_to_string(R8EContext *ctx, R8EValue val) {
         int32_t i = r8e_get_int32(val);
         char buf[12]; /* -2147483648 is 11 chars + null */
         int len = snprintf(buf, sizeof(buf), "%d", (int)i);
-        if (len > 0 && len <= 7) {
+        if (len > 0 && len <= 6) {
             return r8e_from_inline_str(buf, len);
         }
-        /* Longer than 7 chars: need heap string. For now, use inline_str
+        /* Longer than 6 chars: need heap string. For now, use inline_str
          * truncation as placeholder until string engine is integrated. */
         /* TODO: allocate heap string via context */
-        if (len > 7) {
+        if (len > 6) {
             /* Return a heap-allocated string. Simplified allocation. */
             size_t total = sizeof(R8EString) + (size_t)len + 1;
             R8EString *s = (R8EString *)malloc(total);
@@ -582,7 +582,7 @@ R8EValue r8e_num_to_string(R8EContext *ctx, R8EValue val) {
             if (as_int != 0 || !signbit(d)) {
                 char buf[12];
                 int len = snprintf(buf, sizeof(buf), "%d", (int)as_int);
-                if (len > 0 && len <= 7) {
+                if (len > 0 && len <= 6) {
                     return r8e_from_inline_str(buf, len);
                 }
                 if (len > 0) {
@@ -602,27 +602,20 @@ R8EValue r8e_num_to_string(R8EContext *ctx, R8EValue val) {
         /*
          * General double-to-string.
          * ES2023 requires the shortest representation that round-trips.
-         * We use %.17g which is always sufficient, then strip trailing zeros.
+         * Try increasing precision until strtod(result) == original.
          */
         char buf[32];
-        int len = snprintf(buf, sizeof(buf), "%.17g", d);
+        int len = 0;
+        for (int prec = 1; prec <= 21; prec++) {
+            len = snprintf(buf, sizeof(buf), "%.*g", prec, d);
+            if (len <= 0) continue;
+            char *endp;
+            double rt = strtod(buf, &endp);
+            if (rt == d) break;
+        }
         if (len <= 0) return R8E_UNDEFINED;
 
-        /* Strip unnecessary trailing zeros after decimal point */
-        char *dot = strchr(buf, '.');
-        if (dot && !strchr(buf, 'e') && !strchr(buf, 'E')) {
-            char *end = buf + len - 1;
-            while (end > dot && *end == '0') {
-                *end-- = '\0';
-                len--;
-            }
-            if (end == dot) {
-                *end = '\0';
-                len--;
-            }
-        }
-
-        if (len <= 7) {
+        if (len <= 6) {
             return r8e_from_inline_str(buf, len);
         }
 
@@ -683,7 +676,7 @@ R8EValue r8e_num_to_string_radix(R8EContext *ctx, R8EValue val, int radix) {
         if (negative) buf[--pos] = '-';
 
         int len = (int)(sizeof(buf) - 1 - (size_t)pos);
-        if (len <= 7) {
+        if (len <= 6) {
             return r8e_from_inline_str(&buf[pos], len);
         }
 
@@ -936,11 +929,9 @@ R8EValue r8e_math_round(R8EValue v) {
         return make_number(floor(d + 0.5));
     } else {
         /* For negative numbers: -0.5 rounds to -0, not to 0 */
-        double r = ceil(d - 0.5);
-        /* But ceil(-0.5 - 0.5) = ceil(-1.0) = -1.0, which is wrong for -0.5.
-         * ES2023: Math.round(-0.5) = -0 */
-        if (d > -0.5 && d < 0.0) return r8e_from_double(-0.0);
-        return make_number(r);
+        /* ES2023: Math.round(-0.5) = -0 */
+        if (d >= -0.5 && d < 0.0) return r8e_from_double(-0.0);
+        return make_number(floor(d + 0.5));
     }
 }
 
