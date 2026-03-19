@@ -1169,14 +1169,26 @@ static void parse_unary_expr(R8EParser *p)
         emit_op(p, R8E_OP_VOID);
         return;
 
-    case R8E_TOK_KW_DELETE:
+    case R8E_TOK_KW_DELETE: {
         r8e_advance(p);
         /* delete obj.prop or delete obj[key] */
+        uint32_t before = p->bc->length;
         parse_unary_expr(p);
-        /* Simplified: actual delete needs to target the property access */
-        emit_op(p, R8E_OP_DROP);
-        emit_op(p, R8E_OP_PUSH_TRUE);
+        /* Check if last instruction was GET_PROP (1 opcode + 4 operand = 5 bytes)
+         * and patch it to DELETE_PROP */
+        if (p->bc->length >= before + 5 &&
+            p->bc->code[p->bc->length - 5] == R8E_OP_GET_PROP) {
+            p->bc->code[p->bc->length - 5] = R8E_OP_DELETE_PROP;
+        } else if (p->bc->length >= before + 1 &&
+                   p->bc->code[p->bc->length - 1] == R8E_OP_GET_ELEM) {
+            p->bc->code[p->bc->length - 1] = R8E_OP_DELETE_ELEM;
+        } else {
+            /* delete on non-property: evaluate and discard, push true */
+            emit_op(p, R8E_OP_DROP);
+            emit_op(p, R8E_OP_PUSH_TRUE);
+        }
         return;
+    }
 
     case R8E_TOK_KW_AWAIT:
         if (p->in_async) {

@@ -1800,3 +1800,120 @@ const char *r8e_module_get_specifier(R8EModule *mod,
     if (out_len) *out_len = mod->specifier_len;
     return mod->specifier;
 }
+
+
+/* =========================================================================
+ * Stub Implementations for External Dependencies
+ *
+ * These stubs allow the file to compile standalone. In the integrated
+ * build, these are replaced by the real implementations.
+ * ========================================================================= */
+
+#if !defined(R8E_INTEGRATED_BUILD) && !defined(R8E_TESTING)
+
+/* Simple atom table: stores interned strings with non-zero atom IDs.
+ * Used only when running tests standalone (the real atom table is in
+ * r8e_atom.c). */
+
+#define R8E_STUB_ATOM_MAX  256
+#define R8E_STUB_ATOM_MAXLEN 1024
+
+static struct {
+    char     strings[R8E_STUB_ATOM_MAX][R8E_STUB_ATOM_MAXLEN];
+    uint32_t lengths[R8E_STUB_ATOM_MAX];
+    uint32_t count;
+    bool     initialized;
+} g_stub_atoms = {0};
+
+uint32_t r8e_atom_intern_str(R8EContext *ctx, const char *str, uint32_t len) {
+    (void)ctx;
+    if (!str || len == 0) return 0;
+    if (len >= R8E_STUB_ATOM_MAXLEN) len = R8E_STUB_ATOM_MAXLEN - 1;
+
+    /* Search existing atoms */
+    for (uint32_t i = 0; i < g_stub_atoms.count; i++) {
+        if (g_stub_atoms.lengths[i] == len &&
+            memcmp(g_stub_atoms.strings[i], str, len) == 0) {
+            return i + 1; /* atoms are 1-based */
+        }
+    }
+
+    /* Add new atom */
+    if (g_stub_atoms.count >= R8E_STUB_ATOM_MAX) return 0;
+    uint32_t idx = g_stub_atoms.count++;
+    memcpy(g_stub_atoms.strings[idx], str, len);
+    g_stub_atoms.strings[idx][len] = '\0';
+    g_stub_atoms.lengths[idx] = len;
+    return idx + 1;
+}
+
+const char *r8e_atom_get_str(R8EContext *ctx, uint32_t atom,
+                              uint32_t *out_len) {
+    (void)ctx;
+    if (atom == 0 || atom > g_stub_atoms.count) {
+        if (out_len) *out_len = 0;
+        return NULL;
+    }
+    uint32_t idx = atom - 1;
+    if (out_len) *out_len = g_stub_atoms.lengths[idx];
+    return g_stub_atoms.strings[idx];
+}
+
+/* Object model stubs */
+void *r8e_obj_new(R8EContext *ctx) {
+    (void)ctx;
+    return NULL;
+}
+
+R8EValue r8e_obj_get(R8EContext *ctx, void *obj, uint32_t key) {
+    (void)ctx; (void)obj; (void)key;
+    return R8E_UNDEFINED;
+}
+
+void *r8e_obj_set(R8EContext *ctx, void *obj, uint32_t key, R8EValue val) {
+    (void)ctx; (void)obj; (void)key; (void)val;
+    return obj;
+}
+
+bool r8e_obj_has(R8EContext *ctx, void *obj, uint32_t key) {
+    (void)ctx; (void)obj; (void)key;
+    return false;
+}
+
+uint32_t r8e_obj_keys(R8EContext *ctx, void *obj, uint32_t *out_keys,
+                       uint32_t max_keys) {
+    (void)ctx; (void)obj; (void)out_keys; (void)max_keys;
+    return 0;
+}
+
+/* String */
+R8EValue r8e_string_new(R8EContext *ctx, const char *data, uint32_t len) {
+    (void)ctx; (void)data; (void)len;
+    return R8E_UNDEFINED;
+}
+
+const char *r8e_string_data(R8EValue v, uint32_t *out_len) {
+    (void)v;
+    if (out_len) *out_len = 0;
+    return "";
+}
+
+/* Function call */
+R8EValue r8e_call_fn(R8EContext *ctx, R8EValue func, R8EValue this_val,
+                      int argc, const R8EValue *argv) {
+    (void)ctx; (void)func; (void)this_val; (void)argc; (void)argv;
+    return R8E_UNDEFINED;
+}
+
+R8EValue r8e_compile_module(R8EContext *ctx, const char *source,
+                             size_t len, const char *filename) {
+    (void)ctx; (void)source; (void)len; (void)filename;
+    return R8E_UNDEFINED;
+}
+
+R8EValue r8e_exec_function(R8EContext *ctx, R8EValue func) {
+    (void)ctx; (void)func;
+    return R8E_UNDEFINED;
+}
+
+#endif /* R8E_INTEGRATED_BUILD */

@@ -61,6 +61,7 @@ endif
 # --- Source Files ---
 # Core engine sources
 SRCS_CORE = \
+	src/r8e_api.c \
 	src/r8e_value.c \
 	src/r8e_alloc.c \
 	src/r8e_number.c \
@@ -100,17 +101,31 @@ SRCS_UI = \
 	src/ui/r8e_event.c
 
 # All sources
-SRCS = $(SRCS_CORE) $(SRCS_SECURITY) $(SRCS_UI)
+SRCS = $(SRCS_CORE) $(SRCS_SECURITY) $(SRCS_UI) $(SRCS_AI) $(SRCS_MCP)
 
 # Headers
 HDRS = \
 	include/r8e_types.h \
 	include/r8e_opcodes.h \
 	include/r8e_atoms.h \
-	include/r8e_api.h
+	include/r8e_api.h \
+	include/r8e_schema_validator.h
+
+# AI module sources
+SRCS_AI = \
+	src/ai/primitives/r8e_sse_parser.c \
+	src/ai/primitives/r8e_schema_validator.c \
+	src/ai/r8e_gguf.c \
+	src/ai/r8e_tokenizer.c
+
+# MCP module sources
+SRCS_MCP = \
+	src/mcp/r8e_jsonrpc.c \
+	src/mcp/r8e_mcp_stdio.c \
+	src/mcp/r8e_mcp_session.c
 
 # Test sources (r8e_test_stubs.c provides weak stubs for unimplemented symbols)
-SRCS_TEST = tests/test_runner.c $(wildcard tests/unit/*.c) src/r8e_test_stubs.c
+SRCS_TEST = tests/test_runner.c $(wildcard tests/unit/*.c) $(wildcard tests/unit/ai/*.c) $(wildcard tests/unit/mcp/*.c) src/r8e_test_stubs.c
 
 # Benchmark sources
 SRCS_BENCH = bench/bench_runner.c

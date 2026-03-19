@@ -469,8 +469,8 @@ extern bool     r8e_obj_set_elem(void *obj, R8EValue key, R8EValue val);
 extern bool     r8e_obj_delete_elem(void *obj, R8EValue key);
 
 /* Object creation (from r8e_object.c) */
-extern void *r8e_obj_new(void);
-extern void *r8e_array_new(uint32_t capacity);
+extern void *r8e_obj_new(void *ctx);
+extern void *r8e_array_new(void *ctx, uint32_t capacity);
 
 /* Closure access (from r8e_closure.c) */
 extern R8EValue r8e_closure_get_capture(const void *closure, uint8_t index);
@@ -840,7 +840,7 @@ static bool r8e_interp_set_prop(R8EInterpContext *ctx, R8EValue obj,
                 t0->val0 = val;
                 return true;
             }
-            /* Would need tier promotion; simplified for now */
+            /* Tier 0 full - would need promotion. Not supported yet. */
         } else if (tier == 1) {
             R8EObjTier1Interp *t1 = (R8EObjTier1Interp *)ptr;
             for (uint8_t i = 0; i < t1->count; i++) {
@@ -2269,22 +2269,18 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
      * ================================================================= */
 
     TARGET(OP_NEW_OBJECT) {
-        void *obj = r8e_obj_new();
-        if (!obj) {
-            /* Fallback: create a minimal tier-0 object on the heap */
-            R8EObjTier0Interp *t0 = (R8EObjTier0Interp *)calloc(
-                1, sizeof(R8EObjTier0Interp));
-            if (!t0) {
-                r8e_interp_throw_type_error(ctx, "out of memory");
-                goto exception;
-            }
-            t0->flags = (R8E_GC_KIND_OBJECT << R8E_GC_KIND_SHIFT);
-            t0->proto_id = 1; /* PROTO_OBJECT */
-            t0->key0 = 0;
-            t0->val0 = R8E_UNDEFINED;
-            obj = t0;
+        /* Allocate a tier-1 object (supports up to 4 properties).
+         * Most object literals have 2-4 properties, so tier 1 is ideal. */
+        R8EObjTier1Interp *t1 = (R8EObjTier1Interp *)calloc(
+            1, sizeof(R8EObjTier1Interp));
+        if (!t1) {
+            r8e_interp_throw_type_error(ctx, "out of memory");
+            goto exception;
         }
-        PUSH(r8e_interp_from_pointer(obj));
+        t1->flags = (R8E_GC_KIND_OBJECT << R8E_GC_KIND_SHIFT) | 1u; /* tier 1 */
+        t1->proto_id = 1; /* PROTO_OBJECT */
+        t1->count = 0;
+        PUSH(r8e_interp_from_pointer(t1));
         DISPATCH();
     }
 
@@ -2317,9 +2313,21 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
 
     TARGET(OP_NEW_FUNCTION) {
         uint16_t idx = read_u16(&pc);
-        /* The constant pool entry at idx should be a function pointer */
-        R8EValue func_val = constants[idx];
-        /* For now, push the function value directly */
+        /* Function closures are stored after the regular constants in
+         * the constants array. The original literal constant count is
+         * stored in the function's capture_count field (repurposed for
+         * the top-level synthetic function). This gives us the offset
+         * where function closures begin. */
+        uint16_t func_base = frame->func ? frame->func->capture_count : 0;
+        uint16_t adjusted_idx = func_base + idx;
+        R8EValue func_val;
+        if (adjusted_idx < frame->const_count) {
+            func_val = constants[adjusted_idx];
+        } else if (idx < frame->const_count) {
+            func_val = constants[idx];
+        } else {
+            func_val = R8E_UNDEFINED;
+        }
         PUSH(func_val);
         DISPATCH();
     }
@@ -3590,6 +3598,43 @@ R8EValue r8e_interpret(R8EInterpContext *ctx, const uint8_t *bytecode,
     if (ctx->fuel <= 0) ctx->fuel = R8E_FUEL_DEFAULT;
 
     /* Call the function via the standard path */
+    return r8e_interp_call_internal(ctx, r8e_interp_from_pointer(&cl),
+                                     R8E_UNDEFINED, NULL, 0, false);
+}
+
+/**
+ * Extended interpret: same as r8e_interpret but with func_base parameter.
+ * func_base is the index in the constants array where function closures
+ * start (stored in the synthetic function's capture_count for OP_NEW_FUNCTION).
+ */
+R8EValue r8e_interpret_ex(R8EInterpContext *ctx, const uint8_t *bytecode,
+                           uint32_t bytecode_len, R8EValue *constants,
+                           uint16_t num_constants, uint16_t func_base) {
+    if (!ctx || !bytecode || bytecode_len == 0) return R8E_UNDEFINED;
+
+    R8EFunctionInterp func;
+    memset(&func, 0, sizeof(func));
+    func.flags = (R8E_GC_KIND_FUNCTION << R8E_GC_KIND_SHIFT);
+    func.bytecode = (uint8_t *)bytecode;
+    func.bytecode_len = bytecode_len;
+    func.param_count = 0;
+    func.local_count = R8E_DEFAULT_STACK_SIZE;
+    func.stack_size = R8E_DEFAULT_STACK_SIZE;
+    func.constants = constants;
+    func.const_count = num_constants;
+    func.capture_count = func_base; /* Repurpose: offset to func closures */
+
+    R8EClosureInterp cl;
+    memset(&cl, 0, sizeof(cl));
+    cl.flags = (R8E_GC_KIND_CLOSURE << R8E_GC_KIND_SHIFT);
+    cl.func = &func;
+    cl.capture_count = 0;
+    cl.capture_mode = R8E_CAPTURE_MODE_INLINE;
+
+    ctx->has_exception = false;
+    ctx->exception = R8E_UNDEFINED;
+    if (ctx->fuel <= 0) ctx->fuel = R8E_FUEL_DEFAULT;
+
     return r8e_interp_call_internal(ctx, r8e_interp_from_pointer(&cl),
                                      R8E_UNDEFINED, NULL, 0, false);
 }

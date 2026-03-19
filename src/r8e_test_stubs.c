@@ -89,189 +89,23 @@ WEAK uint32_t r8e_microtask_pending_count(R8EPromiseContext *ctx) {
 }
 
 /* =========================================================================
- * Iterator module stubs
+ * Iterator module stubs - now provided by r8e_iterator.c Section 15
  * ========================================================================= */
 typedef struct R8EIterContext R8EIterContext;
 
-WEAK R8EIterContext *r8e_iter_context_new(void) {
-    /* Allocate enough space for the real struct */
-    void *ctx = calloc(1, 4096);
-    return (R8EIterContext *)ctx;
-}
-
-WEAK void r8e_iter_context_free(R8EIterContext *ctx) {
-    free(ctx);
-}
-
-WEAK void r8e_iter_context_init(R8EIterContext *ctx) {
-    (void)ctx;
-}
-
-WEAK void r8e_iter_context_cleanup(R8EIterContext *ctx) {
-    (void)ctx;
-}
-
-WEAK bool r8e_iterator_is_done(R8EValue iter_result) {
-    (void)iter_result;
-    return true;
-}
-
-WEAK R8EValue r8e_iterator_get_value(R8EIterContext *ctx, R8EValue iter_result) {
-    (void)ctx;
-    (void)iter_result;
-    return R8E_UNDEFINED;
-}
-
-WEAK R8EValue r8e_iterator_return(R8EIterContext *ctx, R8EValue iterator,
-                                   R8EValue value) {
-    (void)ctx; (void)iterator; (void)value;
-    return R8E_UNDEFINED;
-}
-
-WEAK R8EValue r8e_iterator_throw(R8EIterContext *ctx, R8EValue iterator,
-                                  R8EValue error) {
-    (void)ctx; (void)iterator; (void)error;
-    return R8E_UNDEFINED;
-}
-
-WEAK int r8e_generator_state(R8EValue gen) {
-    (void)gen;
-    return 3; /* COMPLETED */
-}
-
-WEAK R8EValue r8e_iter_test_make_array(R8EIterContext *ctx, int count, ...) {
-    (void)ctx; (void)count;
-    return R8E_UNDEFINED;
-}
+/* All iterator stubs removed - real implementations in r8e_iterator.c */
 
 /* =========================================================================
- * Proxy module stubs
+ * Proxy/Reflect stubs - now provided by r8e_proxy.c Section G
  * ========================================================================= */
 
-WEAK R8EValue r8e_proxy_revocable(R8EContext *ctx, R8EValue target,
-                                   R8EValue handler) {
-    (void)ctx; (void)target; (void)handler;
-    return R8E_UNDEFINED;
-}
-
-/* r8e_proxy_revoke exists in r8e_proxy.c with different signature - not stubbed */
-
-WEAK bool r8e_proxy_is_revoked(R8EValue proxy) {
-    (void)proxy;
-    return false;
-}
-
-WEAK R8EValue r8e_proxy_get_target(R8EValue proxy) {
-    (void)proxy;
-    return R8E_UNDEFINED;
-}
-
-WEAK R8EValue r8e_proxy_get_handler(R8EValue proxy) {
-    (void)proxy;
-    return R8E_UNDEFINED;
-}
-
-WEAK bool r8e_proxy_define_property(R8EContext *ctx, R8EValue proxy,
-                                     R8EValue key, R8EValue desc) {
-    (void)ctx; (void)proxy; (void)key; (void)desc;
-    return false;
-}
-
-WEAK R8EValue r8e_proxy_test_make_object(R8EContext *ctx) {
-    (void)ctx;
-    return R8E_UNDEFINED;
-}
-
-WEAK R8EValue r8e_proxy_test_make_handler(R8EContext *ctx,
-                                           const char *trap_name) {
-    (void)ctx; (void)trap_name;
-    return R8E_UNDEFINED;
-}
-
-WEAK R8EValue r8e_proxy_test_make_function(R8EContext *ctx) {
-    (void)ctx;
-    return R8E_UNDEFINED;
-}
+/* All proxy and reflect stubs removed - real implementations in r8e_proxy.c */
 
 /* =========================================================================
- * Reflect module stubs
+ * Bytecode stubs (r8e_bc_destroy is static in r8e_bc.c but extern in r8e_api.c)
  * ========================================================================= */
-
-WEAK R8EValue r8e_reflect_get(R8EContext *ctx, R8EValue target,
-                               R8EValue key) {
-    (void)ctx; (void)target; (void)key;
-    return R8E_UNDEFINED;
-}
-
-WEAK bool r8e_reflect_set(R8EContext *ctx, R8EValue target,
-                           R8EValue key, R8EValue value) {
-    (void)ctx; (void)target; (void)key; (void)value;
-    return false;
-}
-
-WEAK bool r8e_reflect_has(R8EContext *ctx, R8EValue target,
-                           R8EValue key) {
-    (void)ctx; (void)target; (void)key;
-    return false;
-}
-
-WEAK bool r8e_reflect_delete_property(R8EContext *ctx, R8EValue target,
-                                       R8EValue key) {
-    (void)ctx; (void)target; (void)key;
-    return false;
-}
-
-WEAK R8EValue r8e_reflect_own_keys(R8EContext *ctx, R8EValue target) {
-    (void)ctx; (void)target;
-    return R8E_UNDEFINED;
-}
-
-WEAK R8EValue r8e_reflect_apply(R8EContext *ctx, R8EValue target,
-                                 R8EValue this_arg, R8EValue args) {
-    (void)ctx; (void)target; (void)this_arg; (void)args;
-    return R8E_UNDEFINED;
-}
-
-WEAK R8EValue r8e_reflect_construct(R8EContext *ctx, R8EValue target,
-                                     R8EValue args) {
-    (void)ctx; (void)target; (void)args;
-    return R8E_UNDEFINED;
-}
-
-WEAK R8EValue r8e_reflect_get_prototype_of(R8EContext *ctx,
-                                            R8EValue target) {
-    (void)ctx; (void)target;
-    return R8E_UNDEFINED;
-}
-
-WEAK bool r8e_reflect_set_prototype_of(R8EContext *ctx, R8EValue target,
-                                        R8EValue proto) {
-    (void)ctx; (void)target; (void)proto;
-    return false;
-}
-
-WEAK bool r8e_reflect_is_extensible(R8EContext *ctx, R8EValue target) {
-    (void)ctx; (void)target;
-    return true;
-}
-
-WEAK bool r8e_reflect_prevent_extensions(R8EContext *ctx, R8EValue target) {
-    (void)ctx; (void)target;
-    return false;
-}
-
-WEAK bool r8e_reflect_define_property(R8EContext *ctx, R8EValue target,
-                                       R8EValue key, R8EValue desc) {
-    (void)ctx; (void)target; (void)key; (void)desc;
-    return false;
-}
-
-WEAK R8EValue r8e_reflect_get_own_property_descriptor(R8EContext *ctx,
-                                                       R8EValue target,
-                                                       R8EValue key) {
-    (void)ctx; (void)target; (void)key;
-    return R8E_UNDEFINED;
-}
+typedef struct R8EBytecodeBuffer R8EBytecodeBuffer;
+WEAK void r8e_bc_destroy(R8EBytecodeBuffer *bc) { (void)bc; }
 
 /* =========================================================================
  * WeakRef / FinalizationRegistry stubs
@@ -644,21 +478,32 @@ WEAK bool r8e_ui_event_is_hovered(const R8EUIDOMNode_Event *n) {
 
 /* =========================================================================
  * Regex stubs (test uses r8e_regex_* but source uses r8e_regexp_*)
+ * Now implemented in r8e_regexp.c - stubs match the test API signatures.
  * ========================================================================= */
 typedef struct R8ERegex R8ERegex;
-typedef struct { int32_t start; int32_t end; } R8ERegexMatch;
+
+typedef struct {
+    int32_t  start;
+    int32_t  end;
+    int32_t  captures_start[32];
+    int32_t  captures_end[32];
+    uint16_t capture_count;
+    uint8_t  engine_used;
+} R8ERegexMatch_Stub;
 
 WEAK R8ERegex *r8e_regex_compile(const char *pattern, uint32_t pattern_len,
-                                  const char *flags, uint32_t flags_len) {
-    (void)pattern; (void)pattern_len; (void)flags; (void)flags_len;
+                                  uint32_t flags, char *error_buf,
+                                  uint32_t error_buf_size) {
+    (void)pattern; (void)pattern_len; (void)flags;
+    (void)error_buf; (void)error_buf_size;
     return NULL;
 }
 
 WEAK void r8e_regex_free(R8ERegex *re) { (void)re; }
 
 WEAK int r8e_regex_exec(R8ERegex *re, const char *input, uint32_t input_len,
-                         R8ERegexMatch *matches) {
-    (void)re; (void)input; (void)input_len; (void)matches;
+                         int32_t start_offset, R8ERegexMatch_Stub *match) {
+    (void)re; (void)input; (void)input_len; (void)start_offset; (void)match;
     return -1;
 }
 

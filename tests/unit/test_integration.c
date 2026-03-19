@@ -35,6 +35,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <math.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "../../include/r8e_types.h"
 #include "../../include/r8e_api.h"
@@ -50,11 +52,34 @@ extern int g_assert_fail;
 
 #define TEST(name) static void test_##name(void)
 
+/* Fork-based crash isolation: each test runs in a child process.
+ * If the child crashes or hangs (>5s), the parent records failure
+ * and continues with the next test. */
 #define RUN_TEST(name) do {                                         \
     g_assert_fail = 0;                                              \
     g_tests_run++;                                                  \
     printf("  %-60s ", #name);                                      \
-    test_##name();                                                  \
+    fflush(stdout);                                                 \
+    fflush(stderr);                                                 \
+    pid_t _pid = fork();                                            \
+    if (_pid == 0) {                                                \
+        alarm(5);                                                   \
+        test_##name();                                              \
+        _exit(g_assert_fail ? 1 : 0);                              \
+    } else if (_pid > 0) {                                         \
+        int _wstatus = 0;                                           \
+        waitpid(_pid, &_wstatus, 0);                               \
+        if (WIFSIGNALED(_wstatus)) {                               \
+            g_assert_fail = 1;                                      \
+            fprintf(stderr, "    CRASHED (signal)\n");              \
+        } else if (WIFEXITED(_wstatus) &&                          \
+                   WEXITSTATUS(_wstatus) != 0) {                   \
+            g_assert_fail = 1;                                      \
+        }                                                           \
+    } else {                                                        \
+        g_assert_fail = 1;                                          \
+        fprintf(stderr, "    fork() failed\n");                     \
+    }                                                               \
     if (g_assert_fail) {                                            \
         g_tests_failed++;                                           \
         printf("FAIL\n");                                           \

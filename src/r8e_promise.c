@@ -381,7 +381,9 @@ struct R8EPromiseContext {
     /* Unhandled rejection hook (optional, set by host) */
     void (*unhandled_rejection_handler)(R8EPromiseContext *ctx,
                                        R8EValue promise,
-                                       R8EValue reason);
+                                       R8EValue reason,
+                                       void *user_data);
+    void *unhandled_user_data;
 
     /* Error state (mirrors R8EContext.error) */
     R8EValue  exception;
@@ -774,7 +776,7 @@ static void r8e_promise_reject_final(R8EPromiseContext *ctx,
     /* If no handler has been attached, report unhandled rejection */
     if (!promise->is_handled && ctx->unhandled_rejection_handler != NULL) {
         ctx->unhandled_rejection_handler(ctx, r8e_from_pointer(promise),
-                                         reason);
+                                         reason, ctx->unhandled_user_data);
     }
 
     r8e_promise_trigger_reactions(ctx, promise);
@@ -2150,9 +2152,47 @@ void r8e_promise_cleanup(R8EPromiseContext *ctx)
  */
 void r8e_promise_set_unhandled_handler(
     R8EPromiseContext *ctx,
-    void (*handler)(R8EPromiseContext *, R8EValue, R8EValue))
+    void (*handler)(R8EPromiseContext *, R8EValue, R8EValue, void *),
+    void *user_data)
 {
     ctx->unhandled_rejection_handler = handler;
+    ctx->unhandled_user_data = user_data;
+}
+
+/**
+ * Allocate a new promise context.
+ */
+R8EPromiseContext *r8e_promise_context_new(void)
+{
+    R8EPromiseContext *ctx = (R8EPromiseContext *)calloc(1,
+                                                         sizeof(R8EPromiseContext));
+    return ctx;
+}
+
+/**
+ * Free a promise context.
+ */
+void r8e_promise_context_free(R8EPromiseContext *ctx)
+{
+    free(ctx);
+}
+
+/**
+ * Drain all pending microtasks (public API).
+ */
+void r8e_microtask_drain(R8EPromiseContext *ctx)
+{
+    if (ctx == NULL) return;
+    r8e_drain_microtasks(ctx);
+}
+
+/**
+ * Get the number of pending microtasks.
+ */
+uint32_t r8e_microtask_pending_count(R8EPromiseContext *ctx)
+{
+    if (ctx == NULL) return 0;
+    return ctx->microtask_queue.count;
 }
 
 

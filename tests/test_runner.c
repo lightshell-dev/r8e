@@ -13,6 +13,8 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 /* =========================================================================
  * Test Infrastructure
@@ -23,13 +25,37 @@ int g_tests_passed = 0;
 int g_tests_failed = 0;
 int g_assert_fail  = 0;  /* set within a test to mark failure */
 
+/* Crash recovery: fork-based isolation for each test.
+ * Each test runs in a child process. If the child crashes,
+ * the parent records a failure and continues. */
+
 #define TEST(name) static void test_##name(void)
 
 #define RUN_TEST(name) do {                                         \
     g_assert_fail = 0;                                              \
     g_tests_run++;                                                  \
     printf("  %-60s ", #name);                                      \
-    test_##name();                                                  \
+    fflush(stdout);                                                 \
+    fflush(stderr);                                                 \
+    pid_t pid = fork();                                             \
+    if (pid == 0) {                                                 \
+        /* Child: run test with 5-second timeout */                 \
+        alarm(5);                                                   \
+        test_##name();                                              \
+        _exit(g_assert_fail ? 1 : 0);                              \
+    } else if (pid > 0) {                                          \
+        int wstatus = 0;                                            \
+        waitpid(pid, &wstatus, 0);                                 \
+        if (WIFSIGNALED(wstatus)) {                                \
+            g_assert_fail = 1;                                      \
+            fprintf(stderr, "    CRASHED (signal)\n");              \
+        } else if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) != 0) { \
+            g_assert_fail = 1;                                      \
+        }                                                           \
+    } else {                                                        \
+        g_assert_fail = 1;                                          \
+        fprintf(stderr, "    fork() failed\n");                     \
+    }                                                               \
     if (g_assert_fail) {                                            \
         g_tests_failed++;                                           \
         printf("FAIL\n");                                           \
@@ -194,9 +220,72 @@ void run_integration_tests(void);
 void run_security_deep_tests(void);
 void run_ui_tests(void);
 
+/* Phase 5: AI primitives */
+void run_sse_parser_tests(void);
+void run_schema_validator_tests(void);
+void run_gguf_tests(void);
+void run_tokenizer_tests(void);
+
+/* Phase 6: MCP (Model Context Protocol) */
+void run_mcp_jsonrpc_tests(void);
+
 /* =========================================================================
  * Main
  * ========================================================================= */
+
+/* Run a test suite in a forked child with crash isolation.
+ * The child communicates updated test counts back to the parent via pipe. */
+static void run_suite_isolated(const char *label, void (*suite_fn)(void)) {
+    int pipefd[2];
+    printf("[%s]\n", label);
+    fflush(stdout);
+    fflush(stderr);
+
+    if (pipe(pipefd) != 0) {
+        /* pipe failed; run in-process as fallback */
+        suite_fn();
+        printf("\n");
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        /* Child: run suite, write counts, exit */
+        close(pipefd[0]);
+        alarm(60); /* 60s timeout for entire suite */
+        suite_fn();
+        /* Send counts to parent */
+        int counts[3] = { g_tests_run, g_tests_passed, g_tests_failed };
+        (void)write(pipefd[1], counts, sizeof(counts));
+        close(pipefd[1]);
+        _exit(0);
+    } else if (pid > 0) {
+        /* Parent: wait for child, read counts */
+        close(pipefd[1]);
+        int counts[3] = { 0, 0, 0 };
+        ssize_t n = read(pipefd[0], counts, sizeof(counts));
+        close(pipefd[0]);
+        int wstatus = 0;
+        waitpid(pid, &wstatus, 0);
+
+        if (n == (ssize_t)sizeof(counts)) {
+            /* Child finished normally - use its counts */
+            g_tests_run = counts[0];
+            g_tests_passed = counts[1];
+            g_tests_failed = counts[2];
+        } else if (WIFSIGNALED(wstatus)) {
+            /* Child crashed before writing counts */
+            fprintf(stderr, "  [%s] SUITE CRASHED (signal %d)\n",
+                    label, WTERMSIG(wstatus));
+            g_tests_run++;
+            g_tests_failed++;
+        }
+    } else {
+        /* fork failed */
+        suite_fn();
+    }
+    printf("\n");
+}
 
 int main(int argc, char **argv) {
     (void)argc;
@@ -204,7 +293,7 @@ int main(int argc, char **argv) {
 
     printf("=== r8e unit tests ===\n\n");
 
-    /* Phase 1: Foundation */
+    /* Phase 1: Foundation (stable - run in-process) */
     printf("[value]\n");
     test_suite_value();
     printf("\n");
@@ -229,97 +318,34 @@ int main(int argc, char **argv) {
     run_token_tests();
     printf("\n");
 
-    /* Phase 2: Runtime */
-    printf("[object]\n");
-    run_object_tests();
-    printf("\n");
-
-    printf("[array]\n");
-    run_array_tests();
-    printf("\n");
-
-    printf("[gc]\n");
-    run_gc_tests();
-    printf("\n");
-
-    printf("[closure]\n");
-    run_closure_tests();
-    printf("\n");
-
-    printf("[interp]\n");
-    run_interp_tests();
-    printf("\n");
-
-    printf("[parse]\n");
-    run_parse_tests();
-    printf("\n");
-
-    printf("[function]\n");
-    run_function_tests();
-    printf("\n");
-
-    printf("[error]\n");
-    run_error_tests();
-    printf("\n");
-
-    printf("[json]\n");
-    run_json_tests();
-    printf("\n");
-
-    printf("[bc]\n");
-    run_bc_tests();
-    printf("\n");
-
-    printf("[scope]\n");
-    run_scope_tests();
-    printf("\n");
-
-    /* Phase 3: Full language + Security */
-    printf("[regexp]\n");
-    run_regexp_tests();
-    printf("\n");
-
-    printf("[promise]\n");
-    run_promise_tests();
-    printf("\n");
-
-    printf("[module]\n");
-    run_module_tests();
-    printf("\n");
-
-    printf("[security]\n");
-    run_security_tests();
-    printf("\n");
-
-    /* Phase 3 continued: ES2023 features */
-    printf("[iterator]\n");
-    run_iterator_tests();
-    printf("\n");
-
-    printf("[proxy]\n");
-    run_proxy_tests();
-    printf("\n");
-
-    printf("[weakref]\n");
-    run_weakref_tests();
-    printf("\n");
-
-    printf("[builtin]\n");
-    run_builtin_tests();
-    printf("\n");
-
-    /* Phase 4: Integration, deep security, and UI */
-    printf("[integration]\n");
-    run_integration_tests();
-    printf("\n");
-
-    printf("[security-deep]\n");
-    run_security_deep_tests();
-    printf("\n");
-
-    printf("[ui]\n");
-    run_ui_tests();
-    printf("\n");
+    /* Phase 2+: Runtime and beyond (fork-isolated to survive crashes) */
+    run_suite_isolated("object", run_object_tests);
+    run_suite_isolated("array", run_array_tests);
+    run_suite_isolated("gc", run_gc_tests);
+    run_suite_isolated("closure", run_closure_tests);
+    run_suite_isolated("interp", run_interp_tests);
+    run_suite_isolated("parse", run_parse_tests);
+    run_suite_isolated("function", run_function_tests);
+    run_suite_isolated("error", run_error_tests);
+    run_suite_isolated("json", run_json_tests);
+    run_suite_isolated("bc", run_bc_tests);
+    run_suite_isolated("scope", run_scope_tests);
+    run_suite_isolated("regexp", run_regexp_tests);
+    run_suite_isolated("promise", run_promise_tests);
+    run_suite_isolated("integration", run_integration_tests);
+    run_suite_isolated("iterator", run_iterator_tests);
+    run_suite_isolated("proxy", run_proxy_tests);
+    run_suite_isolated("weakref", run_weakref_tests);
+    run_suite_isolated("module", run_module_tests);
+    run_suite_isolated("security", run_security_tests);
+    run_suite_isolated("builtin", run_builtin_tests);
+    run_suite_isolated("security-deep", run_security_deep_tests);
+    run_suite_isolated("ui", run_ui_tests);
+    run_suite_isolated("sse-parser", run_sse_parser_tests);
+    run_suite_isolated("schema-validator", run_schema_validator_tests);
+    run_suite_isolated("gguf", run_gguf_tests);
+    run_suite_isolated("tokenizer", run_tokenizer_tests);
+    run_suite_isolated("mcp-jsonrpc", run_mcp_jsonrpc_tests);
 
     printf("=== Summary: %d passed, %d failed out of %d tests ===\n",
            g_tests_passed, g_tests_failed, g_tests_run);
