@@ -97,6 +97,9 @@ extern R8EValue          r8e_interpret_ex(R8EInterpContext *ctx,
 extern bool              r8e_interp_has_exception(const R8EInterpContext *ctx);
 extern R8EValue          r8e_interp_get_exception(const R8EInterpContext *ctx);
 extern R8EValue          r8e_interp_clear_exception(R8EInterpContext *ctx);
+extern R8EValue          r8e_call_function(R8EInterpContext *ctx,
+                                            R8EValue func, R8EValue this_val,
+                                            const R8EValue *args, int argc);
 
 /* --- External functions from r8e_atom.c ---
  * Note: r8e_atom.c has its own R8EContext definition ({ void *arena; }).
@@ -440,8 +443,34 @@ R8EValue r8e_compile(R8EContext *ctx, const char *source, size_t len,
 
 R8EValue r8e_call(R8EContext *ctx, R8EValue func, R8EValue this_val,
                    int argc, const R8EValue *argv) {
-    (void)ctx; (void)func; (void)this_val; (void)argc; (void)argv;
-    return R8E_UNDEFINED;
+    if (!ctx) return R8E_UNDEFINED;
+
+    /* The function value must be a pointer to a closure or native function */
+    if (!R8E_IS_POINTER(func)) {
+        ctx->error.has_exception = true;
+        return R8E_UNDEFINED;
+    }
+
+    /* Create a fresh interpreter context for the call */
+    R8EInterpContext *interp = r8e_interp_context_new();
+    if (!interp) {
+        ctx->error.has_exception = true;
+        return R8E_UNDEFINED;
+    }
+
+    /* Invoke the function through the interpreter's call mechanism */
+    R8EValue result = r8e_call_function(interp, func, this_val, argv, argc);
+
+    /* Propagate exceptions from the interpreter to the public context */
+    if (r8e_interp_has_exception(interp)) {
+        ctx->error.has_exception = true;
+        ctx->error.exception = r8e_interp_get_exception(interp);
+    }
+
+    /* Clean up the interpreter context */
+    r8e_interp_context_free(interp);
+
+    return result;
 }
 
 /* =========================================================================

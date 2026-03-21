@@ -226,8 +226,20 @@ void run_schema_validator_tests(void);
 void run_gguf_tests(void);
 void run_tokenizer_tests(void);
 
+/* Phase 5 continued: AI agent and conversations */
+void run_agent_tests(void);
+void run_conversations_tests(void);
+
+/* Phase AI-2: Sampler, KV cache, chat template */
+void run_sampler_tests(void);
+void run_kvcache_tests(void);
+void run_chat_template_tests(void);
+
 /* Phase 6: MCP (Model Context Protocol) */
 void run_mcp_jsonrpc_tests(void);
+
+/* API wiring tests */
+void run_api_wire_tests(void);
 
 /* =========================================================================
  * Main
@@ -345,7 +357,13 @@ int main(int argc, char **argv) {
     run_suite_isolated("schema-validator", run_schema_validator_tests);
     run_suite_isolated("gguf", run_gguf_tests);
     run_suite_isolated("tokenizer", run_tokenizer_tests);
+    run_suite_isolated("agent", run_agent_tests);
+    run_suite_isolated("conversations", run_conversations_tests);
+    run_suite_isolated("sampler", run_sampler_tests);
+    run_suite_isolated("kvcache", run_kvcache_tests);
+    run_suite_isolated("chat-template", run_chat_template_tests);
     run_suite_isolated("mcp-jsonrpc", run_mcp_jsonrpc_tests);
+    run_suite_isolated("api-wire", run_api_wire_tests);
 
     printf("=== Summary: %d passed, %d failed out of %d tests ===\n",
            g_tests_passed, g_tests_failed, g_tests_run);
