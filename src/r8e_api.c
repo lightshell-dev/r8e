@@ -567,3 +567,295 @@ R8EValue r8e_make_number(double d) {
     }
     return r8e_from_double(d);
 }
+
+/* =========================================================================
+ * Object creation and property access
+ *
+ * These work with the interpreter's object layout (GC header with kind in
+ * bits [7:5], tier in bits [1:0]).  Keys are atom-tagged NaN-boxed values:
+ *   0xFFFC000000000000 | atom_id
+ *
+ * We create Tier 1 objects (up to 4 properties) matching OP_NEW_OBJECT.
+ * ========================================================================= */
+
+/* GC kind for objects (bits [7:5] = 0) */
+#define API_OBJ_GC_KIND_OBJECT  0u
+#define API_OBJ_GC_KIND_SHIFT   5
+
+/* Atom-tagged key encoding used by the interpreter */
+#define API_ATOM_TAG  0xFFFC000000000000ULL
+
+/* Interpreter-compatible object tier structs (must match r8e_interp.c) */
+typedef struct { R8EValue key; R8EValue val; } ApiPropPair;
+
+typedef struct {
+    uint32_t flags;
+    uint32_t proto_id;
+    R8EValue key0;
+    R8EValue val0;
+} ApiObjTier0;
+
+typedef struct {
+    uint32_t  flags;
+    uint32_t  proto_id;
+    uint8_t   count;
+    uint8_t   pad[7];
+    ApiPropPair props[4];
+} ApiObjTier1;
+
+typedef struct {
+    uint32_t  flags;
+    uint32_t  proto_id;
+    uint8_t   count;
+    uint8_t   capacity;
+    uint8_t   pad[6];
+    ApiPropPair *props;
+} ApiObjTier2;
+
+typedef struct {
+    uint32_t  flags;
+    uint32_t  proto_id;
+    uint16_t  count;
+    uint16_t  capacity;
+    uint32_t  pad;
+    ApiPropPair *buckets;
+} ApiObjTier3;
+
+/* Extern: atom interning */
+extern uint32_t r8e_atom_intern_cstr(void *ctx, const char *cstr);
+
+R8EValue r8e_make_object(R8EContext *ctx) {
+    (void)ctx;
+    /* Allocate a Tier 1 object matching OP_NEW_OBJECT in r8e_interp.c */
+    ApiObjTier1 *t1 = (ApiObjTier1 *)calloc(1, sizeof(ApiObjTier1));
+    if (!t1) return R8E_UNDEFINED;
+
+    t1->flags = (API_OBJ_GC_KIND_OBJECT << API_OBJ_GC_KIND_SHIFT) | 1u; /* tier 1 */
+    t1->proto_id = 1; /* PROTO_OBJECT */
+    t1->count = 0;
+
+    return r8e_from_pointer(t1);
+}
+
+R8EValue r8e_get_prop(R8EContext *ctx, R8EValue obj, const char *name) {
+    (void)ctx;
+    if (!name || !R8E_IS_POINTER(obj)) return R8E_UNDEFINED;
+
+    uint32_t atom = r8e_atom_intern_cstr(NULL, name);
+    if (atom == 0) return R8E_UNDEFINED;
+
+    return r8e_get_prop_atom(ctx, obj, atom);
+}
+
+R8EValue r8e_get_prop_atom(R8EContext *ctx, R8EValue obj, uint32_t atom) {
+    (void)ctx;
+    if (!R8E_IS_POINTER(obj)) return R8E_UNDEFINED;
+
+    void *ptr = r8e_get_pointer(obj);
+    if (!ptr) return R8E_UNDEFINED;
+
+    uint32_t flags = *(uint32_t *)ptr;
+    uint32_t kind = (flags >> API_OBJ_GC_KIND_SHIFT) & 0x7;
+    if (kind != API_OBJ_GC_KIND_OBJECT) return R8E_UNDEFINED;
+
+    uint8_t tier = flags & 0x03;
+    R8EValue key = API_ATOM_TAG | (uint64_t)atom;
+
+    if (tier == 0) {
+        ApiObjTier0 *t0 = (ApiObjTier0 *)ptr;
+        if (t0->key0 == key) return t0->val0;
+    } else if (tier == 1) {
+        ApiObjTier1 *t1 = (ApiObjTier1 *)ptr;
+        for (uint8_t i = 0; i < t1->count; i++) {
+            if (t1->props[i].key == key) return t1->props[i].val;
+        }
+    } else if (tier == 2) {
+        ApiObjTier2 *t2 = (ApiObjTier2 *)ptr;
+        if (t2->props) {
+            for (uint8_t i = 0; i < t2->count; i++) {
+                if (t2->props[i].key == key) return t2->props[i].val;
+            }
+        }
+    } else if (tier == 3) {
+        ApiObjTier3 *t3 = (ApiObjTier3 *)ptr;
+        if (t3->buckets && t3->capacity > 0) {
+            uint32_t mask = t3->capacity - 1;
+            uint32_t idx = atom & mask;
+            for (uint16_t probe = 0; probe < t3->capacity; probe++) {
+                R8EValue bkey = t3->buckets[idx].key;
+                if (bkey == key) return t3->buckets[idx].val;
+                if (bkey == 0) break; /* empty slot */
+                idx = (idx + 1) & mask;
+            }
+        }
+    }
+
+    return R8E_UNDEFINED;
+}
+
+R8EStatus r8e_set_prop(R8EContext *ctx, R8EValue obj, const char *name,
+                       R8EValue val) {
+    if (!name || !R8E_IS_POINTER(obj)) return R8E_ERROR;
+
+    uint32_t atom = r8e_atom_intern_cstr(NULL, name);
+    if (atom == 0) return R8E_ERROR;
+
+    return r8e_set_prop_atom(ctx, obj, atom, val);
+}
+
+R8EStatus r8e_set_prop_atom(R8EContext *ctx, R8EValue obj, uint32_t atom,
+                            R8EValue val) {
+    (void)ctx;
+    if (!R8E_IS_POINTER(obj)) return R8E_ERROR;
+
+    void *ptr = r8e_get_pointer(obj);
+    if (!ptr) return R8E_ERROR;
+
+    uint32_t flags = *(uint32_t *)ptr;
+    uint32_t kind = (flags >> API_OBJ_GC_KIND_SHIFT) & 0x7;
+    if (kind != API_OBJ_GC_KIND_OBJECT) return R8E_ERROR;
+
+    uint8_t tier = flags & 0x03;
+    R8EValue key = API_ATOM_TAG | (uint64_t)atom;
+
+    if (tier == 0) {
+        ApiObjTier0 *t0 = (ApiObjTier0 *)ptr;
+        if (t0->key0 == 0 || t0->key0 == key) {
+            t0->key0 = key;
+            t0->val0 = val;
+            return R8E_OK;
+        }
+        return R8E_ERROR; /* tier 0 full, no promotion from API */
+    } else if (tier == 1) {
+        ApiObjTier1 *t1 = (ApiObjTier1 *)ptr;
+        /* Check for existing key */
+        for (uint8_t i = 0; i < t1->count; i++) {
+            if (t1->props[i].key == key) {
+                t1->props[i].val = val;
+                return R8E_OK;
+            }
+        }
+        /* Add new property */
+        if (t1->count < 4) {
+            t1->props[t1->count].key = key;
+            t1->props[t1->count].val = val;
+            t1->count++;
+            return R8E_OK;
+        }
+        return R8E_ERROR; /* tier 1 full */
+    } else if (tier == 2) {
+        ApiObjTier2 *t2 = (ApiObjTier2 *)ptr;
+        if (t2->props) {
+            for (uint8_t i = 0; i < t2->count; i++) {
+                if (t2->props[i].key == key) {
+                    t2->props[i].val = val;
+                    return R8E_OK;
+                }
+            }
+            if (t2->count < t2->capacity) {
+                t2->props[t2->count].key = key;
+                t2->props[t2->count].val = val;
+                t2->count++;
+                return R8E_OK;
+            }
+        }
+        return R8E_ERROR;
+    }
+
+    return R8E_ERROR;
+}
+
+bool r8e_has_prop(R8EContext *ctx, R8EValue obj, const char *name) {
+    if (!name || !R8E_IS_POINTER(obj)) return false;
+
+    uint32_t atom = r8e_atom_intern_cstr(NULL, name);
+    if (atom == 0) return false;
+
+    void *ptr = r8e_get_pointer(obj);
+    if (!ptr) return false;
+
+    uint32_t flags = *(uint32_t *)ptr;
+    uint32_t kind = (flags >> API_OBJ_GC_KIND_SHIFT) & 0x7;
+    if (kind != API_OBJ_GC_KIND_OBJECT) return false;
+
+    uint8_t tier = flags & 0x03;
+    R8EValue key = API_ATOM_TAG | (uint64_t)atom;
+
+    (void)ctx;
+
+    if (tier == 0) {
+        ApiObjTier0 *t0 = (ApiObjTier0 *)ptr;
+        return t0->key0 == key;
+    } else if (tier == 1) {
+        ApiObjTier1 *t1 = (ApiObjTier1 *)ptr;
+        for (uint8_t i = 0; i < t1->count; i++) {
+            if (t1->props[i].key == key) return true;
+        }
+    } else if (tier == 2) {
+        ApiObjTier2 *t2 = (ApiObjTier2 *)ptr;
+        if (t2->props) {
+            for (uint8_t i = 0; i < t2->count; i++) {
+                if (t2->props[i].key == key) return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool r8e_delete_prop(R8EContext *ctx, R8EValue obj, const char *name) {
+    if (!name || !R8E_IS_POINTER(obj)) return false;
+
+    uint32_t atom = r8e_atom_intern_cstr(NULL, name);
+    if (atom == 0) return false;
+
+    void *ptr = r8e_get_pointer(obj);
+    if (!ptr) return false;
+
+    uint32_t flags = *(uint32_t *)ptr;
+    uint32_t kind = (flags >> API_OBJ_GC_KIND_SHIFT) & 0x7;
+    if (kind != API_OBJ_GC_KIND_OBJECT) return false;
+
+    uint8_t tier = flags & 0x03;
+    R8EValue key = API_ATOM_TAG | (uint64_t)atom;
+
+    (void)ctx;
+
+    if (tier == 0) {
+        ApiObjTier0 *t0 = (ApiObjTier0 *)ptr;
+        if (t0->key0 == key) {
+            t0->key0 = 0;
+            t0->val0 = R8E_UNDEFINED;
+            return true;
+        }
+    } else if (tier == 1) {
+        ApiObjTier1 *t1 = (ApiObjTier1 *)ptr;
+        for (uint8_t i = 0; i < t1->count; i++) {
+            if (t1->props[i].key == key) {
+                /* Shift remaining props down */
+                for (uint8_t j = i; j < t1->count - 1; j++) {
+                    t1->props[j] = t1->props[j + 1];
+                }
+                t1->count--;
+                t1->props[t1->count].key = 0;
+                t1->props[t1->count].val = R8E_UNDEFINED;
+                return true;
+            }
+        }
+    } else if (tier == 2) {
+        ApiObjTier2 *t2 = (ApiObjTier2 *)ptr;
+        if (t2->props) {
+            for (uint8_t i = 0; i < t2->count; i++) {
+                if (t2->props[i].key == key) {
+                    for (uint8_t j = i; j < t2->count - 1; j++) {
+                        t2->props[j] = t2->props[j + 1];
+                    }
+                    t2->count--;
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}

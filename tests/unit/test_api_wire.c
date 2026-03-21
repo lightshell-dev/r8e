@@ -151,6 +151,120 @@ TEST(api_call_with_string) {
 }
 
 /* =========================================================================
+ * Object creation and property access tests
+ * ========================================================================= */
+
+/*
+ * Test 4: Create object, set prop "x" to 42, get it back, verify == 42.
+ */
+TEST(api_make_object_and_set_get_prop) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EValue obj = r8e_make_object(ctx);
+    ASSERT_TRUE(R8E_IS_POINTER(obj));
+
+    R8EValue val42 = r8e_from_int32(42);
+    R8EStatus st = r8e_set_prop(ctx, obj, "x", val42);
+    ASSERT_TRUE(st == R8E_OK);
+
+    R8EValue got = r8e_get_prop(ctx, obj, "x");
+    ASSERT_TRUE(R8E_IS_INT32(got));
+    ASSERT_TRUE(r8e_get_int32(got) == 42);
+
+    r8e_context_free(ctx);
+}
+
+/*
+ * Test 5: Create object, set "key", verify has_prop true, delete, verify false.
+ */
+TEST(api_has_prop_and_delete_prop) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EValue obj = r8e_make_object(ctx);
+    ASSERT_TRUE(R8E_IS_POINTER(obj));
+
+    R8EStatus st = r8e_set_prop(ctx, obj, "key", r8e_from_int32(99));
+    ASSERT_TRUE(st == R8E_OK);
+
+    ASSERT_TRUE(r8e_has_prop(ctx, obj, "key") == true);
+
+    bool deleted = r8e_delete_prop(ctx, obj, "key");
+    ASSERT_TRUE(deleted == true);
+
+    ASSERT_TRUE(r8e_has_prop(ctx, obj, "key") == false);
+
+    /* Get after delete should return undefined */
+    R8EValue got = r8e_get_prop(ctx, obj, "key");
+    ASSERT_TRUE(got == R8E_UNDEFINED);
+
+    r8e_context_free(ctx);
+}
+
+/*
+ * Test 6: Create object, set a/b/c, verify all three.
+ */
+TEST(api_set_prop_multiple) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EValue obj = r8e_make_object(ctx);
+    ASSERT_TRUE(R8E_IS_POINTER(obj));
+
+    ASSERT_TRUE(r8e_set_prop(ctx, obj, "a", r8e_from_int32(1)) == R8E_OK);
+    ASSERT_TRUE(r8e_set_prop(ctx, obj, "b", r8e_from_int32(2)) == R8E_OK);
+    ASSERT_TRUE(r8e_set_prop(ctx, obj, "c", r8e_from_int32(3)) == R8E_OK);
+
+    ASSERT_TRUE(r8e_get_int32(r8e_get_prop(ctx, obj, "a")) == 1);
+    ASSERT_TRUE(r8e_get_int32(r8e_get_prop(ctx, obj, "b")) == 2);
+    ASSERT_TRUE(r8e_get_int32(r8e_get_prop(ctx, obj, "c")) == 3);
+
+    /* Verify has_prop for all three */
+    ASSERT_TRUE(r8e_has_prop(ctx, obj, "a"));
+    ASSERT_TRUE(r8e_has_prop(ctx, obj, "b"));
+    ASSERT_TRUE(r8e_has_prop(ctx, obj, "c"));
+
+    /* Verify non-existent prop */
+    ASSERT_TRUE(!r8e_has_prop(ctx, obj, "d"));
+
+    r8e_context_free(ctx);
+}
+
+/*
+ * Test 7: Create object via API, set props, then read them back.
+ * Also tests overwriting an existing property.
+ */
+TEST(api_object_from_eval) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    /* Create object via API and set properties (simulates eval'd object) */
+    R8EValue obj = r8e_make_object(ctx);
+    ASSERT_TRUE(R8E_IS_POINTER(obj));
+
+    ASSERT_TRUE(r8e_set_prop(ctx, obj, "x", r8e_from_int32(1)) == R8E_OK);
+    ASSERT_TRUE(r8e_set_prop(ctx, obj, "y", r8e_from_int32(2)) == R8E_OK);
+
+    R8EValue x = r8e_get_prop(ctx, obj, "x");
+    R8EValue y = r8e_get_prop(ctx, obj, "y");
+
+    ASSERT_TRUE(r8e_to_double(x) == 1.0);
+    ASSERT_TRUE(r8e_to_double(y) == 2.0);
+
+    /* Overwrite x */
+    ASSERT_TRUE(r8e_set_prop(ctx, obj, "x", r8e_from_int32(10)) == R8E_OK);
+    R8EValue x2 = r8e_get_prop(ctx, obj, "x");
+    ASSERT_TRUE(r8e_get_int32(x2) == 10);
+
+    /* y should be unchanged */
+    R8EValue y2 = r8e_get_prop(ctx, obj, "y");
+    ASSERT_TRUE(r8e_get_int32(y2) == 2);
+
+    r8e_context_free(ctx);
+}
+
+/* =========================================================================
  * Suite entry point
  * ========================================================================= */
 
@@ -158,4 +272,8 @@ void run_api_wire_tests(void) {
     RUN_TEST(api_call_simple_function);
     RUN_TEST(api_call_no_args);
     RUN_TEST(api_call_with_string);
+    RUN_TEST(api_make_object_and_set_get_prop);
+    RUN_TEST(api_has_prop_and_delete_prop);
+    RUN_TEST(api_set_prop_multiple);
+    RUN_TEST(api_object_from_eval);
 }
