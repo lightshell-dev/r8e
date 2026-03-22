@@ -363,6 +363,101 @@ TEST(api_make_native_func) {
 }
 
 /* =========================================================================
+ * Global variable management tests
+ * ========================================================================= */
+
+/*
+ * Test: Set global "answer" to 42, eval "answer" should return 42.
+ */
+TEST(api_set_get_global) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EStatus st = r8e_set_global(ctx, "answer", r8e_from_int32(42));
+    ASSERT_TRUE(st == R8E_OK);
+
+    R8EValue got = r8e_get_global(ctx, "answer");
+    ASSERT_TRUE(R8E_IS_INT32(got));
+    ASSERT_TRUE(r8e_get_int32(got) == 42);
+
+    /* Also verify via eval */
+    R8EValue result = r8e_eval(ctx, "answer", 0);
+    ASSERT_TRUE(R8E_IS_INT32(result));
+    ASSERT_TRUE(r8e_get_int32(result) == 42);
+
+    r8e_context_free(ctx);
+}
+
+/*
+ * Test: Set a global object with properties, eval code that reads those properties.
+ */
+TEST(api_set_global_object) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EValue obj = r8e_make_object(ctx);
+    ASSERT_TRUE(R8E_IS_POINTER(obj));
+    ASSERT_TRUE(r8e_set_prop(ctx, obj, "x", r8e_from_int32(10)) == R8E_OK);
+    ASSERT_TRUE(r8e_set_prop(ctx, obj, "y", r8e_from_int32(20)) == R8E_OK);
+
+    R8EStatus st = r8e_set_global(ctx, "point", obj);
+    ASSERT_TRUE(st == R8E_OK);
+
+    R8EValue rx = r8e_eval(ctx, "point.x", 0);
+    ASSERT_TRUE(R8E_IS_INT32(rx));
+    ASSERT_TRUE(r8e_get_int32(rx) == 10);
+
+    R8EValue ry = r8e_eval(ctx, "point.y", 0);
+    ASSERT_TRUE(R8E_IS_INT32(ry));
+    ASSERT_TRUE(r8e_get_int32(ry) == 20);
+
+    r8e_context_free(ctx);
+}
+
+/*
+ * Test: Register a native function as global, eval JS that calls it.
+ */
+static R8EValue native_double(R8EContext *ctx, R8EValue this_val,
+                               int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc > 0 && R8E_IS_INT32(argv[0]))
+        return r8e_from_int32(r8e_get_int32(argv[0]) * 2);
+    return R8E_UNDEFINED;
+}
+
+TEST(api_set_global_func_and_call) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EStatus st = r8e_set_global_func(ctx, "double_it", native_double, 1);
+    ASSERT_TRUE(st == R8E_OK);
+
+    R8EValue result = r8e_eval(ctx, "double_it(21)", 0);
+    ASSERT_TRUE(R8E_IS_INT32(result));
+    ASSERT_TRUE(r8e_get_int32(result) == 42);
+
+    r8e_context_free(ctx);
+}
+
+/*
+ * Test: Set a global in one eval, read it in another.
+ */
+TEST(api_globals_persist_across_evals) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    /* First eval: assign a global (no 'var' - uses OP_STORE_GLOBAL) */
+    r8e_eval(ctx, "myGlobal = 99", 0);
+
+    /* Second eval: read it back */
+    R8EValue result = r8e_eval(ctx, "myGlobal", 0);
+    ASSERT_TRUE(R8E_IS_INT32(result));
+    ASSERT_TRUE(r8e_get_int32(result) == 99);
+
+    r8e_context_free(ctx);
+}
+
+/* =========================================================================
  * Suite entry point
  * ========================================================================= */
 
@@ -378,4 +473,8 @@ void run_api_wire_tests(void) {
     RUN_TEST(api_make_string_short_inline);
     RUN_TEST(api_make_array_and_elements);
     RUN_TEST(api_make_native_func);
+    RUN_TEST(api_set_get_global);
+    RUN_TEST(api_set_global_object);
+    RUN_TEST(api_set_global_func_and_call);
+    RUN_TEST(api_globals_persist_across_evals);
 }

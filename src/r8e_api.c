@@ -133,6 +133,9 @@ R8EContext *r8e_context_new(void) {
     ctx->error.has_exception = false;
     ctx->error.exception = R8E_UNDEFINED;
 
+    /* Create a persistent global object for cross-eval global access */
+    ctx->global_obj = r8e_make_object(ctx);
+
     return ctx;
 }
 
@@ -407,6 +410,11 @@ R8EValue r8e_eval(R8EContext *ctx, const char *source, size_t len) {
         return R8E_UNDEFINED;
     }
 
+    /* Inject the persistent global object so globals survive across evals */
+    if (R8E_IS_POINTER(ctx->global_obj)) {
+        r8e_interp_set_global(interp, ctx->global_obj);
+    }
+
     R8EValue result = r8e_interpret_ex(
         interp, bc->code, bc->length,
         eval_constants, eval_const_count, func_base);
@@ -471,6 +479,35 @@ R8EValue r8e_call(R8EContext *ctx, R8EValue func, R8EValue this_val,
     r8e_interp_context_free(interp);
 
     return result;
+}
+
+/* =========================================================================
+ * Global variable management
+ *
+ * Globals are stored as properties on ctx->global_obj, which persists
+ * across r8e_eval() calls. r8e_eval() injects this object into each
+ * interpreter context so JS code can access globals via OP_LOAD_GLOBAL
+ * and OP_STORE_GLOBAL.
+ * ========================================================================= */
+
+R8EStatus r8e_set_global(R8EContext *ctx, const char *name, R8EValue val) {
+    if (!ctx || !name) return R8E_ERROR;
+    if (!R8E_IS_POINTER(ctx->global_obj)) return R8E_ERROR;
+    return r8e_set_prop(ctx, ctx->global_obj, name, val);
+}
+
+R8EValue r8e_get_global(R8EContext *ctx, const char *name) {
+    if (!ctx || !name) return R8E_UNDEFINED;
+    if (!R8E_IS_POINTER(ctx->global_obj)) return R8E_UNDEFINED;
+    return r8e_get_prop(ctx, ctx->global_obj, name);
+}
+
+R8EStatus r8e_set_global_func(R8EContext *ctx, const char *name,
+                               R8ENativeFunc func, int argc) {
+    if (!ctx || !name || !func) return R8E_ERROR;
+    R8EValue fn = r8e_make_native_func(ctx, func, name, argc);
+    if (R8E_IS_UNDEFINED(fn)) return R8E_ERROR_OOM;
+    return r8e_set_global(ctx, name, fn);
 }
 
 /* =========================================================================
@@ -1068,7 +1105,7 @@ R8EValue r8e_make_native_func(R8EContext *ctx, R8ENativeFunc func,
         1, sizeof(ApiNativeFuncInterp));
     if (!nf) return R8E_UNDEFINED;
 
-    nf->flags = (6u << API_OBJ_GC_KIND_SHIFT); /* NATIVE_FUNC kind */
+    nf->flags = (5u << API_OBJ_GC_KIND_SHIFT); /* R8E_GC_KIND_FUNCTION (native) */
     nf->proto_id = 3; /* PROTO_FUNCTION */
     nf->callback = func;
     nf->name_atom = name ? r8e_atom_intern_cstr(NULL, name) : 0;

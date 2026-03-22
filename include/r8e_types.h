@@ -914,6 +914,9 @@ struct R8EContext {
     uint16_t    module_count;
     uint16_t    module_capacity;
 
+    /* Global object (persists across r8e_eval calls) */
+    R8EValue    global_obj;
+
     /* Flags */
     uint32_t    flags;
 };
