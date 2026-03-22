@@ -265,6 +265,104 @@ TEST(api_object_from_eval) {
 }
 
 /* =========================================================================
+ * String, array, and native function creation tests
+ * ========================================================================= */
+
+/*
+ * Test: Create "hello" string via r8e_make_string, extract with r8e_get_cstring.
+ */
+TEST(api_make_string_and_extract) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EValue s = r8e_make_string(ctx, "hello", 5);
+    ASSERT_TRUE(r8e_is_string(s));
+
+    char buf[16] = {0};
+    size_t len = 0;
+    const char *str = r8e_get_cstring(s, buf, &len);
+    ASSERT_TRUE(str != NULL);
+    ASSERT_TRUE(len == 5);
+    ASSERT_TRUE(strcmp(str, "hello") == 0);
+
+    r8e_context_free(ctx);
+}
+
+/*
+ * Test: Create "hi" (<=6 chars), verify it's an inline string.
+ */
+TEST(api_make_string_short_inline) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EValue s = r8e_make_string(ctx, "hi", 2);
+    ASSERT_TRUE(R8E_IS_INLINE_STR(s));
+    ASSERT_TRUE(r8e_is_string(s));
+
+    char buf[16] = {0};
+    size_t len = 0;
+    const char *str = r8e_get_cstring(s, buf, &len);
+    ASSERT_TRUE(str != NULL);
+    ASSERT_TRUE(len == 2);
+    ASSERT_TRUE(strcmp(str, "hi") == 0);
+
+    r8e_context_free(ctx);
+}
+
+/*
+ * Test: Create array, set elements at 0 and 1, verify length==2 and get back.
+ */
+TEST(api_make_array_and_elements) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EValue arr = r8e_make_array(ctx, 0);
+    ASSERT_TRUE(r8e_is_array(arr));
+
+    R8EStatus st;
+    st = r8e_set_element(ctx, arr, 0, r8e_from_int32(10));
+    ASSERT_TRUE(st == R8E_OK);
+
+    st = r8e_set_element(ctx, arr, 1, r8e_from_int32(20));
+    ASSERT_TRUE(st == R8E_OK);
+
+    int32_t len = r8e_get_length(ctx, arr);
+    ASSERT_TRUE(len == 2);
+
+    R8EValue v0 = r8e_get_element(ctx, arr, 0);
+    ASSERT_TRUE(R8E_IS_INT32(v0));
+    ASSERT_TRUE(r8e_get_int32(v0) == 10);
+
+    R8EValue v1 = r8e_get_element(ctx, arr, 1);
+    ASSERT_TRUE(R8E_IS_INT32(v1));
+    ASSERT_TRUE(r8e_get_int32(v1) == 20);
+
+    r8e_context_free(ctx);
+}
+
+/*
+ * Test: Create native function, verify r8e_is_function returns true.
+ */
+static R8EValue test_native_add(R8EContext *ctx, R8EValue this_val,
+                                 int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc < 2) return R8E_UNDEFINED;
+    int32_t a = r8e_to_int32(argv[0]);
+    int32_t b = r8e_to_int32(argv[1]);
+    return r8e_from_int32(a + b);
+}
+
+TEST(api_make_native_func) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EValue func = r8e_make_native_func(ctx, test_native_add, "add", 2);
+    ASSERT_TRUE(r8e_is_function(func));
+
+    r8e_context_free(ctx);
+}
+
+/* =========================================================================
  * Suite entry point
  * ========================================================================= */
 
@@ -276,4 +374,8 @@ void run_api_wire_tests(void) {
     RUN_TEST(api_has_prop_and_delete_prop);
     RUN_TEST(api_set_prop_multiple);
     RUN_TEST(api_object_from_eval);
+    RUN_TEST(api_make_string_and_extract);
+    RUN_TEST(api_make_string_short_inline);
+    RUN_TEST(api_make_array_and_elements);
+    RUN_TEST(api_make_native_func);
 }

@@ -485,19 +485,29 @@ const char *r8e_get_cstring(R8EValue v, char *buf, size_t *outlen) {
         return buf;
     }
 
-    /* Handle heap strings (pointer to R8EString) */
+    /* Handle heap strings (pointer to R8EString or R8EStringInterp) */
     if (R8E_IS_POINTER(v)) {
-        R8EString *s = (R8EString *)r8e_get_pointer(v);
-        if (s) {
-            /* Check GC kind bits - in the interpreter, kind is at bits [7:5],
-             * and STRING kind = 1.  In r8e_types.h the kind encoding differs
-             * (uses bits [2:0] for tier). We check both conventions. */
-            uint32_t flags = s->flags;
-            /* Interpreter convention: kind in bits [7:5] */
+        void *ptr = r8e_get_pointer(v);
+        if (ptr) {
+            uint32_t flags = *(uint32_t *)ptr;
             uint8_t kind_interp = (flags >> 5) & 0x7;
+            if (kind_interp == 1) {
+                /* Interpreter-compatible string: data follows the struct
+                 * (ApiStringInterp / R8EStringInterp layout with offset_table
+                 * pointer). Cast to get byte_length field at offset 8. */
+                uint32_t *words = (uint32_t *)ptr;
+                uint32_t byte_len = words[2]; /* byte_length at offset 8 */
+                /* Data follows the struct header (5 words + 1 pointer).
+                 * struct size: flags(4) + hash(4) + byte_length(4) +
+                 * char_length(4) + offset_table(8) = 24 bytes on 64-bit */
+                const char *data = (const char *)ptr +
+                    sizeof(uint32_t) * 4 + sizeof(void *);
+                if (outlen) *outlen = byte_len;
+                return data;
+            }
             /* r8e_types.h uses R8E_OBJ_IS_STRING = 0x60 in bits [7:5] = 3 */
-            if (kind_interp == 1 /* interp STRING */ ||
-                (flags & 0xE0U) == 0x60U /* types.h OBJ_IS_STRING */) {
+            if ((flags & 0xE0U) == 0x60U) {
+                R8EString *s = (R8EString *)ptr;
                 if (outlen) *outlen = s->byte_length;
                 return s->data;
             }
@@ -531,7 +541,8 @@ bool r8e_is_function(R8EValue v) {
         uint32_t *flags = (uint32_t *)r8e_get_pointer(v);
         if (flags) {
             uint8_t kind = (*flags >> 5) & 0x7;
-            return kind == 3 /* closure */ || kind == 5 /* function */;
+            return kind == 3 /* closure */ || kind == 5 /* function */
+                || kind == 6 /* native function */;
         }
     }
     return false;
@@ -858,4 +869,212 @@ bool r8e_delete_prop(R8EContext *ctx, R8EValue obj, const char *name) {
     }
 
     return false;
+}
+
+/* =========================================================================
+ * String creation: r8e_make_string, r8e_make_cstring
+ *
+ * Short ASCII strings (<=6 chars) are stored inline in the NaN-box.
+ * Longer strings are heap-allocated with GC kind STRING (bits [7:5] = 1).
+ * ========================================================================= */
+
+/* Interpreter-compatible string struct (must match r8e_interp.c R8EStringInterp) */
+typedef struct {
+    uint32_t flags;
+    uint32_t hash;
+    uint32_t byte_length;
+    uint32_t char_length;
+    void    *offset_table;
+    /* char data[] follows via (struct + 1) */
+} ApiStringInterp;
+
+R8EValue r8e_make_string(R8EContext *ctx, const char *str, size_t len) {
+    (void)ctx;
+    if (!str) return R8E_UNDEFINED;
+    if (len == 0) len = strlen(str);
+
+    /* Try inline encoding for short ASCII strings */
+    if (len <= 6) {
+        R8EValue v = r8e_from_inline_str(str, (int)len);
+        if (v != R8E_UNDEFINED) return v;
+    }
+
+    /* Heap-allocate interpreter-compatible string */
+    size_t alloc_sz = sizeof(ApiStringInterp) + len + 1;
+    ApiStringInterp *s = (ApiStringInterp *)calloc(1, alloc_sz);
+    if (!s) return R8E_UNDEFINED;
+
+    s->flags = (1u << API_OBJ_GC_KIND_SHIFT) | 0x01u; /* STRING kind + ASCII flag */
+    s->hash = 0;
+    s->byte_length = (uint32_t)len;
+    s->char_length = (uint32_t)len;
+    s->offset_table = NULL;
+    char *dst = (char *)(s + 1);
+    memcpy(dst, str, len);
+    dst[len] = '\0';
+
+    return r8e_from_pointer(s);
+}
+
+R8EValue r8e_make_cstring(R8EContext *ctx, const char *str) {
+    if (!str) return R8E_UNDEFINED;
+    return r8e_make_string(ctx, str, strlen(str));
+}
+
+/* =========================================================================
+ * Array creation: r8e_make_array
+ *
+ * Creates interpreter-compatible array with GC kind ARRAY (bits [7:5] = 2).
+ * ========================================================================= */
+
+/* Interpreter-compatible array struct (must match r8e_interp.c R8EArrayInterp) */
+typedef struct {
+    uint32_t  flags;
+    uint32_t  proto_id;
+    uint32_t  length;
+    uint32_t  capacity;
+    R8EValue *elements;
+    void     *named;
+} ApiArrayInterp;
+
+R8EValue r8e_make_array(R8EContext *ctx, uint32_t capacity) {
+    (void)ctx;
+    ApiArrayInterp *arr = (ApiArrayInterp *)calloc(1, sizeof(ApiArrayInterp));
+    if (!arr) return R8E_UNDEFINED;
+
+    arr->flags = (2u << API_OBJ_GC_KIND_SHIFT); /* ARRAY kind */
+    arr->proto_id = 2; /* PROTO_ARRAY */
+    arr->length = 0;
+    arr->named = NULL;
+
+    uint32_t cap = capacity > 0 ? capacity : 4;
+    arr->elements = (R8EValue *)calloc(cap, sizeof(R8EValue));
+    if (!arr->elements) {
+        free(arr);
+        return R8E_UNDEFINED;
+    }
+    arr->capacity = cap;
+
+    /* Initialize elements to undefined */
+    for (uint32_t i = 0; i < cap; i++)
+        arr->elements[i] = R8E_UNDEFINED;
+
+    return r8e_from_pointer(arr);
+}
+
+/* =========================================================================
+ * Array element access: r8e_get_element, r8e_set_element, r8e_get_length
+ * ========================================================================= */
+
+R8EValue r8e_get_element(R8EContext *ctx, R8EValue arr, uint32_t index) {
+    (void)ctx;
+    if (!R8E_IS_POINTER(arr)) return R8E_UNDEFINED;
+
+    ApiArrayInterp *a = (ApiArrayInterp *)r8e_get_pointer(arr);
+    if (!a) return R8E_UNDEFINED;
+
+    uint8_t kind = (a->flags >> API_OBJ_GC_KIND_SHIFT) & 0x7;
+    if (kind != 2) return R8E_UNDEFINED; /* not an array */
+
+    if (index >= a->length) return R8E_UNDEFINED;
+    return a->elements[index];
+}
+
+R8EStatus r8e_set_element(R8EContext *ctx, R8EValue arr, uint32_t index,
+                           R8EValue val) {
+    (void)ctx;
+    if (!R8E_IS_POINTER(arr)) return R8E_ERROR;
+
+    ApiArrayInterp *a = (ApiArrayInterp *)r8e_get_pointer(arr);
+    if (!a) return R8E_ERROR;
+
+    uint8_t kind = (a->flags >> API_OBJ_GC_KIND_SHIFT) & 0x7;
+    if (kind != 2) return R8E_ERROR; /* not an array */
+
+    /* Grow if needed */
+    if (index >= a->capacity) {
+        uint32_t new_cap = a->capacity;
+        while (new_cap <= index) {
+            uint32_t next = new_cap * 2;
+            if (next < new_cap) { new_cap = index + 1; break; }
+            new_cap = next;
+        }
+        R8EValue *new_elems = (R8EValue *)realloc(
+            a->elements, new_cap * sizeof(R8EValue));
+        if (!new_elems) return R8E_ERROR_OOM;
+        for (uint32_t i = a->capacity; i < new_cap; i++)
+            new_elems[i] = R8E_UNDEFINED;
+        a->elements = new_elems;
+        a->capacity = new_cap;
+    }
+
+    a->elements[index] = val;
+    if (index >= a->length)
+        a->length = index + 1;
+
+    return R8E_OK;
+}
+
+int32_t r8e_get_length(R8EContext *ctx, R8EValue v) {
+    (void)ctx;
+
+    /* Inline strings */
+    if (R8E_IS_INLINE_STR(v))
+        return (int32_t)r8e_inline_str_len(v);
+
+    if (!R8E_IS_POINTER(v)) return -1;
+
+    void *ptr = r8e_get_pointer(v);
+    if (!ptr) return -1;
+
+    uint32_t flags = *(uint32_t *)ptr;
+    uint8_t kind = (flags >> API_OBJ_GC_KIND_SHIFT) & 0x7;
+
+    if (kind == 2) { /* ARRAY */
+        ApiArrayInterp *a = (ApiArrayInterp *)ptr;
+        return (int32_t)a->length;
+    }
+    if (kind == 1) { /* STRING */
+        ApiStringInterp *s = (ApiStringInterp *)ptr;
+        return (int32_t)s->char_length;
+    }
+
+    return -1;
+}
+
+/* =========================================================================
+ * Native function creation: r8e_make_native_func
+ *
+ * Creates an R8ENativeFunction with GC kind NATIVE_FUNC (bits [7:5] = 6).
+ * ========================================================================= */
+
+/* Interpreter-compatible native function struct */
+typedef struct {
+    uint32_t      flags;
+    uint32_t      proto_id;
+    R8ENativeFunc callback;
+    uint32_t      name_atom;
+    int16_t       arity;
+    uint8_t       func_flags;
+    uint8_t       reserved;
+} ApiNativeFuncInterp;
+
+R8EValue r8e_make_native_func(R8EContext *ctx, R8ENativeFunc func,
+                               const char *name, int argc) {
+    (void)ctx;
+    if (!func) return R8E_UNDEFINED;
+
+    ApiNativeFuncInterp *nf = (ApiNativeFuncInterp *)calloc(
+        1, sizeof(ApiNativeFuncInterp));
+    if (!nf) return R8E_UNDEFINED;
+
+    nf->flags = (6u << API_OBJ_GC_KIND_SHIFT); /* NATIVE_FUNC kind */
+    nf->proto_id = 3; /* PROTO_FUNCTION */
+    nf->callback = func;
+    nf->name_atom = name ? r8e_atom_intern_cstr(NULL, name) : 0;
+    nf->arity = (int16_t)argc;
+    nf->func_flags = 0;
+    nf->reserved = 0;
+
+    return r8e_from_pointer(nf);
 }
