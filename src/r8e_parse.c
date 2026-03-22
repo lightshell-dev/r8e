@@ -1116,15 +1116,32 @@ static void parse_postfix_expr(R8EParser *p)
         if (r8e_check(p, R8E_TOK_INC) || r8e_check(p, R8E_TOK_DEC)) {
             bool is_inc = r8e_check(p, R8E_TOK_INC);
             r8e_advance(p);
-            /* Need to handle: variable++, obj.prop++, obj[key]++ */
-            /* For simplicity, emit INC/DEC on the top-of-stack value.
-             * A full implementation would track the LHS target. */
-            emit_op(p, R8E_OP_DUP);
-            emit_op(p, is_inc ? R8E_OP_INC : R8E_OP_DEC);
-            /* The result is new value on top, old value below.
-             * We need to store new and keep old. Simplified for now. */
-            emit_op(p, R8E_OP_SWAP);
-            emit_op(p, R8E_OP_DROP);
+
+            /* Check if the last emitted instruction was OP_LOAD_LOCAL.
+             * If so, use the fast POST_INC/POST_DEC opcode which both
+             * updates the register and pushes the old value. */
+            if (p->bc->length >= 2 &&
+                p->bc->code[p->bc->length - 2] == R8E_OP_LOAD_LOCAL) {
+                uint8_t reg = p->bc->code[p->bc->length - 1];
+                /* Rewind the LOAD_LOCAL instruction */
+                p->bc->length -= 2;
+                emit_op_u8(p, is_inc ? R8E_OP_POST_INC : R8E_OP_POST_DEC, reg);
+            } else if (p->bc->length >= 2 &&
+                       p->bc->code[p->bc->length - 2] == R8E_OP_LOAD_CLOSURE) {
+                /* Closure variable: load, dup, inc/dec, store back, swap, drop */
+                uint8_t idx = p->bc->code[p->bc->length - 1];
+                /* Keep the LOAD_CLOSURE, add update logic */
+                emit_op(p, R8E_OP_DUP);
+                emit_op(p, is_inc ? R8E_OP_INC : R8E_OP_DEC);
+                emit_op_u8(p, R8E_OP_STORE_CLOSURE, idx);
+                /* old value remains on stack (from DUP before INC) */
+            } else {
+                /* Fallback: DUP, INC/DEC, SWAP, DROP (no store-back) */
+                emit_op(p, R8E_OP_DUP);
+                emit_op(p, is_inc ? R8E_OP_INC : R8E_OP_DEC);
+                emit_op(p, R8E_OP_SWAP);
+                emit_op(p, R8E_OP_DROP);
+            }
         }
     }
 }
@@ -1224,6 +1241,20 @@ static void parse_unary_expr(R8EParser *p)
         r8e_advance(p);
         parse_unary_expr(p);
         emit_op(p, is_inc ? R8E_OP_INC : R8E_OP_DEC);
+        /* Store the updated value back if target is a local or closure var.
+         * Check last emitted: INC/DEC is 1 byte, before it should be
+         * LOAD_LOCAL <reg> (2 bytes) or LOAD_CLOSURE <idx> (2 bytes). */
+        if (p->bc->length >= 3 &&
+            p->bc->code[p->bc->length - 3] == R8E_OP_LOAD_LOCAL) {
+            uint8_t reg = p->bc->code[p->bc->length - 2];
+            emit_op(p, R8E_OP_DUP);
+            emit_op_u8(p, R8E_OP_STORE_LOCAL, reg);
+        } else if (p->bc->length >= 3 &&
+                   p->bc->code[p->bc->length - 3] == R8E_OP_LOAD_CLOSURE) {
+            uint8_t idx = p->bc->code[p->bc->length - 2];
+            emit_op(p, R8E_OP_DUP);
+            emit_op_u8(p, R8E_OP_STORE_CLOSURE, idx);
+        }
         return;
     }
 
@@ -1447,12 +1478,82 @@ static void parse_assignment_expr(R8EParser *p)
     /* Not a simple assignment - parse as conditional */
     parse_conditional_expr(p);
 
-    /* Check for assignment to member expression */
+    /* Check for assignment to member expression (obj.prop = x, obj[key] = x) */
     if (r8e_check(p, R8E_TOK_ASSIGN) || is_compound_assign(p->cur.type)) {
-        /* TODO: implement assignment to member expressions (obj.prop = x, etc.)
-         * This requires rewriting the last emitted GET_PROP/GET_ELEM as SET */
-        r8e_parse_error(p, "assignment to complex LHS not yet supported "
-                       "(use simple variable assignment)");
+        /* Determine if the last emitted instruction was GET_PROP or GET_ELEM.
+         * GET_PROP = 1 opcode + 4 atom bytes = 5 bytes total.
+         * GET_ELEM = 1 opcode byte. */
+        bool is_get_prop = (p->bc->length >= 5 &&
+                            p->bc->code[p->bc->length - 5] == R8E_OP_GET_PROP);
+        bool is_get_elem = (!is_get_prop && p->bc->length >= 1 &&
+                            p->bc->code[p->bc->length - 1] == R8E_OP_GET_ELEM);
+
+        if (!is_get_prop && !is_get_elem) {
+            r8e_parse_error(p, "invalid assignment target");
+            return;
+        }
+
+        if (r8e_check(p, R8E_TOK_ASSIGN)) {
+            /* Simple assignment: obj.prop = val or obj[key] = val */
+            r8e_advance(p); /* consume '=' */
+
+            if (is_get_prop) {
+                /* Extract the atom from GET_PROP operand (little-endian u32) */
+                uint32_t atom = (uint32_t)p->bc->code[p->bc->length - 4]
+                    | ((uint32_t)p->bc->code[p->bc->length - 3] << 8)
+                    | ((uint32_t)p->bc->code[p->bc->length - 2] << 16)
+                    | ((uint32_t)p->bc->code[p->bc->length - 1] << 24);
+                /* Rewind GET_PROP: stack now has [obj] */
+                p->bc->length -= 5;
+                /* Parse RHS value: stack [obj, val] */
+                parse_assignment_expr(p);
+                /* DUP val: stack [obj, val, val] */
+                emit_op(p, R8E_OP_DUP);
+                /* ROT3: [obj, val, val] -> [val, obj, val] */
+                emit_op(p, R8E_OP_ROT3);
+                /* SET_PROP: pops val and obj -> stack [val] */
+                emit_op_u32(p, R8E_OP_SET_PROP, atom);
+            } else {
+                /* Bracket access: rewind GET_ELEM: stack [obj, key] */
+                p->bc->length -= 1;
+                /* Parse RHS: stack [obj, key, val] */
+                parse_assignment_expr(p);
+                /* SET_ELEM: pops val, key, obj -> stack [] */
+                emit_op(p, R8E_OP_SET_ELEM);
+                /* Push undefined as expression result (value not preserved
+                 * for bracket assignment; works for statement-level usage) */
+                emit_op(p, R8E_OP_PUSH_UNDEFINED);
+            }
+        } else {
+            /* Compound assignment: obj.prop op= val or obj[key] op= val */
+            R8ETokenType assign_type = p->cur.type;
+            r8e_advance(p); /* consume op= */
+
+            if (is_get_prop) {
+                /* Extract atom from GET_PROP */
+                uint32_t atom = (uint32_t)p->bc->code[p->bc->length - 4]
+                    | ((uint32_t)p->bc->code[p->bc->length - 3] << 8)
+                    | ((uint32_t)p->bc->code[p->bc->length - 2] << 16)
+                    | ((uint32_t)p->bc->code[p->bc->length - 1] << 24);
+                /* Rewrite GET_PROP to GET_PROP_2 (keeps obj on stack):
+                 * stack goes from [obj] to [obj, obj[atom]] */
+                p->bc->code[p->bc->length - 5] = R8E_OP_GET_PROP_2;
+                /* Parse RHS: stack [obj, obj[atom], val] */
+                parse_assignment_expr(p);
+                /* Apply binary operator: stack [obj, result] */
+                emit_op(p, compound_assign_opcode(assign_type));
+                /* DUP result: stack [obj, result, result] */
+                emit_op(p, R8E_OP_DUP);
+                /* ROT3: [obj, result, result] -> [result, obj, result] */
+                emit_op(p, R8E_OP_ROT3);
+                /* SET_PROP: pops result and obj -> stack [result] */
+                emit_op_u32(p, R8E_OP_SET_PROP, atom);
+            } else {
+                /* Compound bracket assignment is not yet supported */
+                r8e_parse_error(p, "compound assignment to bracket expression "
+                               "not yet supported");
+            }
+        }
     }
 }
 

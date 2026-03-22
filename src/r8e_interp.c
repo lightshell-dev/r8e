@@ -116,7 +116,8 @@ typedef struct R8EStringInterp {
     uint32_t hash;
     uint32_t byte_length;
     uint32_t char_length;
-    /* char data[] follows */
+    void    *offset_table; /* matches R8EString layout in r8e_types.h */
+    /* char data[] follows (flexible array member) */
 } R8EStringInterp;
 
 static inline const char *r8e_interp_string_data(const R8EStringInterp *s) {
@@ -450,6 +451,9 @@ struct R8EInterpContext {
     /* Memory usage tracking */
     size_t        memory_used;
 
+    /* Last property atom accessed (for builtin method dispatch) */
+    uint32_t      last_prop_atom;
+
     /* Allocation (simplified - uses malloc/free) */
     void         *user_data;
 };
@@ -644,6 +648,41 @@ static inline bool r8e_is_string_val(R8EValue v) {
 }
 
 /* =========================================================================
+ * Internal helper: create an interp-compatible string value
+ * ========================================================================= */
+
+static R8EValue r8e_interp_make_string(const char *data, uint32_t len) {
+    /* Try inline (0-6 ASCII chars) */
+    if (len <= 6) {
+        bool all_ascii = true;
+        for (uint32_t i = 0; i < len; i++) {
+            if ((uint8_t)data[i] > 127) { all_ascii = false; break; }
+        }
+        if (all_ascii) {
+            R8EValue v = 0xFFFD000000000000ULL;
+            v |= ((uint64_t)len << 45);
+            for (uint32_t i = 0; i < len; i++) {
+                v |= ((uint64_t)(uint8_t)data[i] << (38 - i * 7));
+            }
+            return v;
+        }
+    }
+    /* Heap-allocate */
+    size_t alloc_sz = sizeof(R8EStringInterp) + len + 1;
+    R8EStringInterp *s = (R8EStringInterp *)malloc(alloc_sz);
+    if (!s) return R8E_UNDEFINED;
+    s->flags = (R8E_GC_KIND_STRING << R8E_GC_KIND_SHIFT) | 0x01;
+    s->hash = 0;
+    s->byte_length = len;
+    s->char_length = len;
+    s->offset_table = NULL;
+    char *dst = (char *)(s + 1);
+    memcpy(dst, data, len);
+    dst[len] = '\0';
+    return r8e_interp_from_pointer(s);
+}
+
+/* =========================================================================
  * Internal helper: string concatenation (simplified)
  * ========================================================================= */
 
@@ -685,6 +724,7 @@ static R8EValue r8e_string_concat(R8EInterpContext *ctx,
     s->hash = 0;
     s->byte_length = total;
     s->char_length = total;
+    s->offset_table = NULL;
 
     char *data = (char *)(s + 1);
     memcpy(data, sa, len_a);
@@ -727,6 +767,7 @@ static void r8e_interp_throw_type_error(R8EInterpContext *ctx,
         s->hash = 0;
         s->byte_length = (uint32_t)len;
         s->char_length = (uint32_t)len;
+        s->offset_table = NULL;
         memcpy((char *)(s + 1), msg, len + 1);
         r8e_interp_throw(ctx, r8e_interp_from_pointer(s));
     } else {
@@ -754,8 +795,20 @@ static void r8e_interp_throw_range_error(R8EInterpContext *ctx,
  * When the object module is linked, these are overridden. */
 static R8EValue r8e_interp_get_prop(R8EInterpContext *ctx, R8EValue obj,
                                      uint32_t atom) {
+    /* Handle inline strings */
+    if (R8E_IS_INLINE_STR(obj)) {
+        if (atom == 1 /* R8E_ATOM_length */) {
+            return r8e_interp_from_int32(r8e_interp_inline_str_len(obj));
+        }
+        return R8E_UNDEFINED;
+    }
     if (!R8E_IS_POINTER(obj)) {
-        r8e_interp_throw_type_error(ctx, "Cannot read property of non-object");
+        /* Allow property access on booleans/numbers to return undefined
+         * instead of throwing, to match JS semantics for primitives */
+        if (R8E_IS_NULL(obj) || R8E_IS_UNDEFINED(obj)) {
+            r8e_interp_throw_type_error(ctx, "Cannot read property of null/undefined");
+            return R8E_UNDEFINED;
+        }
         return R8E_UNDEFINED;
     }
     void *ptr = r8e_interp_get_pointer(obj);
@@ -1118,6 +1171,239 @@ static bool r8e_interp_unwind(R8EInterpContext *ctx, R8ECallFrame *frame) {
  * ========================================================================= */
 
 static R8EValue r8e_interp_execute(R8EInterpContext *ctx, R8ECallFrame *frame);
+static R8EValue r8e_interp_call_internal(R8EInterpContext *ctx,
+                                          R8EValue callee,
+                                          R8EValue this_val,
+                                          const R8EValue *argv, int argc,
+                                          bool is_construct);
+
+/* =========================================================================
+ * Builtin method dispatch for strings and arrays
+ *
+ * Called when OP_CALL_METHOD's callee is not a function (UNDEFINED) and the
+ * receiver is a string or array. Uses ctx->last_prop_atom to determine
+ * which method was requested.
+ * ========================================================================= */
+
+static bool r8e_interp_builtin_method(R8EInterpContext *ctx,
+                                       R8EValue this_val,
+                                       uint32_t method_atom,
+                                       const R8EValue *argv, int argc,
+                                       R8EValue *out_result) {
+    /* --- String methods --- */
+    if (r8e_is_string_val(this_val)) {
+        char sbuf[8];
+        uint32_t slen;
+        const char *sdata = r8e_interp_get_string(this_val, sbuf, &slen);
+
+        if (method_atom == 126 /* R8E_ATOM_includes */) {
+            if (argc < 1) { *out_result = R8E_FALSE; return true; }
+            char nbuf[8]; uint32_t nlen;
+            const char *needle = r8e_interp_get_string(argv[0], nbuf, &nlen);
+            if (nlen == 0) { *out_result = R8E_TRUE; return true; }
+            if (nlen > slen) { *out_result = R8E_FALSE; return true; }
+            bool found = false;
+            for (uint32_t i = 0; i <= slen - nlen; i++) {
+                if (memcmp(sdata + i, needle, nlen) == 0) {
+                    found = true; break;
+                }
+            }
+            *out_result = found ? R8E_TRUE : R8E_FALSE;
+            return true;
+        }
+
+        if (method_atom == 124 /* R8E_ATOM_indexOf */) {
+            if (argc < 1) { *out_result = r8e_interp_from_int32(-1); return true; }
+            char nbuf[8]; uint32_t nlen;
+            const char *needle = r8e_interp_get_string(argv[0], nbuf, &nlen);
+            int32_t pos = -1;
+            if (nlen <= slen) {
+                for (uint32_t i = 0; i <= slen - nlen; i++) {
+                    if (memcmp(sdata + i, needle, nlen) == 0) {
+                        pos = (int32_t)i; break;
+                    }
+                }
+            }
+            *out_result = r8e_interp_from_int32(pos);
+            return true;
+        }
+
+        if (method_atom == 159 /* R8E_ATOM_split */) {
+            if (argc < 1) {
+                /* No separator: return array with whole string */
+                R8EArrayInterp *arr = (R8EArrayInterp *)calloc(1, sizeof(R8EArrayInterp));
+                if (!arr) { *out_result = R8E_UNDEFINED; return true; }
+                arr->flags = (R8E_GC_KIND_ARRAY << R8E_GC_KIND_SHIFT);
+                arr->proto_id = 2;
+                arr->length = 1; arr->capacity = 4;
+                arr->elements = (R8EValue *)calloc(4, sizeof(R8EValue));
+                arr->elements[0] = this_val;
+                *out_result = r8e_interp_from_pointer(arr);
+                return true;
+            }
+            char dbuf[8]; uint32_t dlen;
+            const char *delim = r8e_interp_get_string(argv[0], dbuf, &dlen);
+            /* Split string by delimiter */
+            R8EArrayInterp *arr = (R8EArrayInterp *)calloc(1, sizeof(R8EArrayInterp));
+            if (!arr) { *out_result = R8E_UNDEFINED; return true; }
+            arr->flags = (R8E_GC_KIND_ARRAY << R8E_GC_KIND_SHIFT);
+            arr->proto_id = 2;
+            arr->capacity = 8;
+            arr->elements = (R8EValue *)calloc(8, sizeof(R8EValue));
+            arr->length = 0;
+            uint32_t start = 0;
+            for (uint32_t i = 0; i <= slen; i++) {
+                bool at_delim = (dlen == 0) ? (i > start) :
+                    (i + dlen <= slen && memcmp(sdata + i, delim, dlen) == 0);
+                if (at_delim || i == slen) {
+                    if (i == slen && dlen > 0) at_delim = false;
+                    if (at_delim || i == slen) {
+                        uint32_t part_len = i - start;
+                        R8EValue part = r8e_interp_make_string(sdata + start, part_len);
+                        if (arr->length >= arr->capacity) {
+                            arr->capacity *= 2;
+                            arr->elements = (R8EValue *)realloc(arr->elements,
+                                arr->capacity * sizeof(R8EValue));
+                        }
+                        arr->elements[arr->length++] = part;
+                        start = i + dlen;
+                        if (dlen > 0) i += dlen - 1; /* skip delimiter */
+                    }
+                }
+            }
+            *out_result = r8e_interp_from_pointer(arr);
+            return true;
+        }
+
+        return false; /* Not a known string method */
+    }
+
+    /* --- Array methods --- */
+    if (R8E_IS_POINTER(this_val)) {
+        void *ptr = r8e_interp_get_pointer(this_val);
+        if (!ptr) return false;
+        R8EGCHeader *h = (R8EGCHeader *)ptr;
+        if (R8E_GC_GET_KIND(h->flags) != R8E_GC_KIND_ARRAY) return false;
+        R8EArrayInterp *arr = (R8EArrayInterp *)ptr;
+
+        if (method_atom == 114 /* R8E_ATOM_push */) {
+            for (int i = 0; i < argc; i++) {
+                if (arr->length >= arr->capacity) {
+                    uint32_t new_cap = arr->capacity ? arr->capacity * 2 : 8;
+                    R8EValue *new_el = (R8EValue *)realloc(arr->elements,
+                        new_cap * sizeof(R8EValue));
+                    if (!new_el) break;
+                    for (uint32_t j = arr->capacity; j < new_cap; j++)
+                        new_el[j] = R8E_UNDEFINED;
+                    arr->elements = new_el;
+                    arr->capacity = new_cap;
+                }
+                arr->elements[arr->length++] = argv[i];
+            }
+            *out_result = r8e_interp_from_int32((int32_t)arr->length);
+            return true;
+        }
+
+        if (method_atom == 115 /* R8E_ATOM_pop */) {
+            if (arr->length == 0) {
+                *out_result = R8E_UNDEFINED;
+            } else {
+                arr->length--;
+                *out_result = arr->elements[arr->length];
+            }
+            return true;
+        }
+
+        if (method_atom == 132 /* R8E_ATOM_map */) {
+            if (argc < 1 || !r8e_is_callable(argv[0])) {
+                r8e_interp_throw_type_error(ctx, "map callback is not a function");
+                *out_result = R8E_UNDEFINED;
+                return true;
+            }
+            R8EArrayInterp *res = (R8EArrayInterp *)calloc(1, sizeof(R8EArrayInterp));
+            if (!res) { *out_result = R8E_UNDEFINED; return true; }
+            res->flags = (R8E_GC_KIND_ARRAY << R8E_GC_KIND_SHIFT);
+            res->proto_id = 2;
+            res->length = arr->length;
+            res->capacity = arr->length > 0 ? arr->length : 1;
+            res->elements = (R8EValue *)calloc(res->capacity, sizeof(R8EValue));
+            for (uint32_t i = 0; i < arr->length; i++) {
+                R8EValue cb_args[3];
+                cb_args[0] = arr->elements[i];
+                cb_args[1] = r8e_interp_from_int32((int32_t)i);
+                cb_args[2] = this_val;
+                R8EValue ret = r8e_interp_call_internal(ctx, argv[0],
+                    R8E_UNDEFINED, cb_args, 3, false);
+                if (ctx->has_exception) { *out_result = R8E_UNDEFINED; return true; }
+                res->elements[i] = ret;
+            }
+            *out_result = r8e_interp_from_pointer(res);
+            return true;
+        }
+
+        if (method_atom == 131 /* R8E_ATOM_filter */) {
+            if (argc < 1 || !r8e_is_callable(argv[0])) {
+                r8e_interp_throw_type_error(ctx, "filter callback is not a function");
+                *out_result = R8E_UNDEFINED;
+                return true;
+            }
+            R8EArrayInterp *res = (R8EArrayInterp *)calloc(1, sizeof(R8EArrayInterp));
+            if (!res) { *out_result = R8E_UNDEFINED; return true; }
+            res->flags = (R8E_GC_KIND_ARRAY << R8E_GC_KIND_SHIFT);
+            res->proto_id = 2;
+            res->capacity = arr->length > 0 ? arr->length : 1;
+            res->elements = (R8EValue *)calloc(res->capacity, sizeof(R8EValue));
+            res->length = 0;
+            for (uint32_t i = 0; i < arr->length; i++) {
+                R8EValue cb_args[3];
+                cb_args[0] = arr->elements[i];
+                cb_args[1] = r8e_interp_from_int32((int32_t)i);
+                cb_args[2] = this_val;
+                R8EValue ret = r8e_interp_call_internal(ctx, argv[0],
+                    R8E_UNDEFINED, cb_args, 3, false);
+                if (ctx->has_exception) { *out_result = R8E_UNDEFINED; return true; }
+                if (r8e_is_truthy(ret)) {
+                    res->elements[res->length++] = arr->elements[i];
+                }
+            }
+            *out_result = r8e_interp_from_pointer(res);
+            return true;
+        }
+
+        if (method_atom == 121 /* R8E_ATOM_join */) {
+            char sep_buf[8]; uint32_t sep_len;
+            const char *sep = ","; sep_len = 1;
+            if (argc >= 1 && r8e_is_string_val(argv[0])) {
+                sep = r8e_interp_get_string(argv[0], sep_buf, &sep_len);
+            }
+            /* Build joined string */
+            size_t total = 0;
+            for (uint32_t i = 0; i < arr->length; i++) {
+                char ebuf[8]; uint32_t elen;
+                r8e_interp_get_string(arr->elements[i], ebuf, &elen);
+                total += elen;
+                if (i > 0) total += sep_len;
+            }
+            char *joined = (char *)malloc(total + 1);
+            if (!joined) { *out_result = R8E_UNDEFINED; return true; }
+            size_t pos = 0;
+            for (uint32_t i = 0; i < arr->length; i++) {
+                if (i > 0) { memcpy(joined + pos, sep, sep_len); pos += sep_len; }
+                char ebuf[8]; uint32_t elen;
+                const char *edata = r8e_interp_get_string(arr->elements[i], ebuf, &elen);
+                memcpy(joined + pos, edata, elen); pos += elen;
+            }
+            joined[total] = '\0';
+            *out_result = r8e_interp_make_string(joined, (uint32_t)total);
+            free(joined);
+            return true;
+        }
+
+        return false;
+    }
+
+    return false;
+}
 
 static R8EValue r8e_interp_call_internal(R8EInterpContext *ctx,
                                           R8EValue callee,
@@ -1538,6 +1824,7 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
 
     TARGET(OP_GET_PROP) {
         atom = read_u32(&pc);
+        ctx->last_prop_atom = atom;
         a = POP(); /* object */
         result = r8e_interp_get_prop(ctx, a, atom);
         if (ctx->has_exception) goto exception;
@@ -1592,6 +1879,7 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
     TARGET(OP_GET_PROP_2) {
         /* Pop obj, push obj AND obj[atom] (for method calls) */
         atom = read_u32(&pc);
+        ctx->last_prop_atom = atom;
         a = PEEK(); /* keep obj on stack */
         result = r8e_interp_get_prop(ctx, a, atom);
         if (ctx->has_exception) goto exception;
@@ -1963,7 +2251,30 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
 
     TARGET(OP_TYPEOF) {
         a = POP();
-        PUSH(r8e_typeof(a));
+        /* Implement typeof inline to produce interpreter-compatible strings. */
+        if (R8E_IS_UNDEFINED(a)) {
+            PUSH(r8e_interp_make_string("undefined", 9));
+        } else if (R8E_IS_NULL(a)) {
+            PUSH(r8e_interp_make_string("object", 6));
+        } else if (R8E_IS_BOOLEAN(a)) {
+            PUSH(r8e_interp_make_string("boolean", 7));
+        } else if (R8E_IS_INT32(a) || R8E_IS_DOUBLE(a)) {
+            PUSH(r8e_interp_make_string("number", 6));
+        } else if (r8e_is_string_val(a)) {
+            PUSH(r8e_interp_make_string("string", 6));
+        } else if (R8E_IS_SYMBOL(a)) {
+            PUSH(r8e_interp_make_string("symbol", 6));
+        } else if (R8E_IS_POINTER(a)) {
+            const R8EGCHeader *th = (const R8EGCHeader *)r8e_interp_get_pointer(a);
+            uint32_t tkind = th ? R8E_GC_GET_KIND(th->flags) : 0;
+            if (tkind == R8E_GC_KIND_CLOSURE || tkind == R8E_GC_KIND_FUNCTION) {
+                PUSH(r8e_interp_make_string("function", 8));
+            } else {
+                PUSH(r8e_interp_make_string("object", 6));
+            }
+        } else {
+            PUSH(r8e_interp_make_string("undefined", 9));
+        }
         DISPATCH();
     }
 
@@ -2036,15 +2347,49 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
     }
 
     TARGET(OP_IN) {
-        b = POP(); /* object */
-        a = POP(); /* key */
-        /* Simplified: check if property exists */
-        if (R8E_IS_POINTER(b) && R8E_IS_ATOM(a)) {
-            atom = (uint32_t)(a & 0xFFFFFFFFULL);
-            result = r8e_interp_get_prop(ctx, b, atom);
-            PUSH(R8E_IS_UNDEFINED(result) ? R8E_FALSE : R8E_TRUE);
+        b = POP(); /* object (RHS) */
+        a = POP(); /* key (LHS) */
+        /* Check if property exists in object */
+        if (R8E_IS_POINTER(b)) {
+            bool in_found = false;
+            void *in_ptr = r8e_interp_get_pointer(b);
+            R8EGCHeader *in_h = in_ptr ? (R8EGCHeader *)in_ptr : NULL;
+            uint32_t in_kind = in_h ? R8E_GC_GET_KIND(in_h->flags) : 99;
+
+            if (R8E_IS_ATOM(a)) {
+                atom = (uint32_t)(a & 0xFFFFFFFFULL);
+                result = r8e_interp_get_prop(ctx, b, atom);
+                in_found = !R8E_IS_UNDEFINED(result);
+            } else if (r8e_is_string_val(a) && in_kind == R8E_GC_KIND_OBJECT) {
+                /* String key: compare against object property keys */
+                char in_buf[8]; uint32_t in_len;
+                const char *in_key = r8e_interp_get_string(a, in_buf, &in_len);
+                uint8_t in_tier = in_h->flags & 0x03;
+                if (in_tier == 1) {
+                    R8EObjTier1Interp *in_t1 = (R8EObjTier1Interp *)in_ptr;
+                    for (uint8_t ii = 0; ii < in_t1->count; ii++) {
+                        R8EValue pk = in_t1->props[ii].key;
+                        if (R8E_IS_ATOM(pk)) {
+                            /* Convert atom to string and compare */
+                            extern const char *r8e_atom_get(void *, uint32_t);
+                            uint32_t aid = (uint32_t)(pk & 0xFFFFFFFFULL);
+                            const char *aname = r8e_atom_get(NULL, aid);
+                            if (aname && strlen(aname) == in_len &&
+                                memcmp(aname, in_key, in_len) == 0) {
+                                in_found = true; break;
+                            }
+                        }
+                    }
+                }
+            } else if (R8E_IS_INT32(a) && in_kind == R8E_GC_KIND_ARRAY) {
+                int32_t in_idx = r8e_interp_get_int32(a);
+                R8EArrayInterp *in_arr = (R8EArrayInterp *)in_ptr;
+                in_found = in_idx >= 0 && (uint32_t)in_idx < in_arr->length;
+            }
+            PUSH(in_found ? R8E_TRUE : R8E_FALSE);
         } else {
-            PUSH(R8E_FALSE);
+            r8e_interp_throw_type_error(ctx, "Cannot use 'in' operator on non-object");
+            goto exception;
         }
         DISPATCH();
     }
@@ -2055,68 +2400,68 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
 
     TARGET(OP_JUMP) {
         off32 = read_i32(&pc);
-        pc += off32 - 4; /* offset is relative to start of operand */
+        pc += off32; /* offset is relative to position after operand */
         DISPATCH();
     }
 
     TARGET(OP_JUMP8) {
         off8 = read_i8(&pc);
-        pc += off8 - 1;
+        pc += off8;
         DISPATCH();
     }
 
     TARGET(OP_JUMP16) {
         off16 = read_i16(&pc);
-        pc += off16 - 2;
+        pc += off16;
         DISPATCH();
     }
 
     TARGET(OP_JUMP_IF_FALSE) {
         off32 = read_i32(&pc);
         a = POP();
-        if (!r8e_is_truthy(a)) pc += off32 - 4;
+        if (!r8e_is_truthy(a)) pc += off32;
         DISPATCH();
     }
 
     TARGET(OP_JUMP_IF_TRUE) {
         off32 = read_i32(&pc);
         a = POP();
-        if (r8e_is_truthy(a)) pc += off32 - 4;
+        if (r8e_is_truthy(a)) pc += off32;
         DISPATCH();
     }
 
     TARGET(OP_JUMP_IF_FALSE8) {
         off8 = read_i8(&pc);
         a = POP();
-        if (!r8e_is_truthy(a)) pc += off8 - 1;
+        if (!r8e_is_truthy(a)) pc += off8;
         DISPATCH();
     }
 
     TARGET(OP_JUMP_IF_TRUE8) {
         off8 = read_i8(&pc);
         a = POP();
-        if (r8e_is_truthy(a)) pc += off8 - 1;
+        if (r8e_is_truthy(a)) pc += off8;
         DISPATCH();
     }
 
     TARGET(OP_JUMP_IF_FALSE16) {
         off16 = read_i16(&pc);
         a = POP();
-        if (!r8e_is_truthy(a)) pc += off16 - 2;
+        if (!r8e_is_truthy(a)) pc += off16;
         DISPATCH();
     }
 
     TARGET(OP_JUMP_IF_TRUE16) {
         off16 = read_i16(&pc);
         a = POP();
-        if (r8e_is_truthy(a)) pc += off16 - 2;
+        if (r8e_is_truthy(a)) pc += off16;
         DISPATCH();
     }
 
     TARGET(OP_JUMP_IF_NULLISH) {
         off32 = read_i32(&pc);
         a = POP();
-        if (R8E_IS_NULLISH(a)) pc += off32 - 4;
+        if (R8E_IS_NULLISH(a)) pc += off32;
         DISPATCH();
     }
 
@@ -2159,6 +2504,23 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
 
         frame->pc = pc;
         frame->sp = sp;
+
+        /* Try builtin method dispatch if callee is not callable */
+        if (!r8e_is_callable(func_val)) {
+            R8EValue builtin_result;
+            if (r8e_interp_builtin_method(ctx, this_obj,
+                    ctx->last_prop_atom, call_args, argc_op,
+                    &builtin_result)) {
+                pc = frame->pc;
+                sp = frame->sp;
+                locals = frame->locals;
+                constants = frame->constants;
+                closure = frame->closure;
+                if (ctx->has_exception) goto exception;
+                PUSH(builtin_result);
+                DISPATCH();
+            }
+        }
 
         result = r8e_interp_call_internal(ctx, func_val, this_obj,
                                            call_args, argc_op, false);
@@ -2238,7 +2600,7 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
             goto exception;
         }
         R8ETryEntry *entry = &frame->try_stack[frame->try_depth];
-        entry->catch_pc = pc + off32 - 4; /* catch block address */
+        entry->catch_pc = pc + off32; /* catch block address */
         entry->finally_pc = NULL;
         entry->saved_sp = sp;
         entry->scope_depth = frame->scope_depth;
@@ -2552,7 +2914,7 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
         off8 = read_i8(&pc);
         a = PEEK();
         if (R8E_IS_UNDEFINED(a)) {
-            pc += off8 - 1;
+            pc += off8;
         }
         DISPATCH();
     }
@@ -2926,7 +3288,7 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
         if (R8E_IS_NULLISH(a)) {
             DROP();
             PUSH(R8E_UNDEFINED);
-            pc += off32 - 4;
+            pc += off32;
         }
         DISPATCH();
     }
@@ -2935,7 +3297,7 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
         off32 = read_i32(&pc);
         a = PEEK();
         if (!R8E_IS_NULLISH(a)) {
-            pc += off32 - 4; /* keep value, skip to end */
+            pc += off32; /* keep value, skip to end */
         } else {
             DROP(); /* discard nullish value, evaluate RHS */
         }
@@ -3112,7 +3474,7 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
 
             PUSH(fi_key);
             if (fi_done) {
-                pc += off32 - 4; /* jump to loop end */
+                pc += off32; /* jump to loop end */
             }
         }
         DISPATCH();
@@ -3208,7 +3570,7 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
 
             PUSH(fo_val);
             if (fo_done) {
-                pc += off32 - 4; /* jump to loop end */
+                pc += off32; /* jump to loop end */
             }
         }
         DISPATCH();

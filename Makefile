@@ -115,8 +115,13 @@ HDRS = \
 SRCS_AI = \
 	src/ai/primitives/r8e_sse_parser.c \
 	src/ai/primitives/r8e_schema_validator.c \
+	src/ai/primitives/r8e_agent.c \
+	src/ai/primitives/r8e_conversations.c \
 	src/ai/r8e_gguf.c \
-	src/ai/r8e_tokenizer.c
+	src/ai/r8e_tokenizer.c \
+	src/ai/r8e_sampler.c \
+	src/ai/r8e_kvcache.c \
+	src/ai/r8e_chat_template.c
 
 # MCP module sources
 SRCS_MCP = \

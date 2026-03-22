@@ -784,3 +784,139 @@ WEAK R8EValue r8e_construct_function(R8EContext *ctx, R8EValue func,
     (void)ctx; (void)func; (void)argc; (void)argv; (void)new_target;
     return R8E_UNDEFINED;
 }
+
+/* =========================================================================
+ * Chat template stubs (r8e_chat_template.h)
+ * ========================================================================= */
+
+typedef struct {
+    const char *bos_token;
+    const char *eos_token;
+    const char *template_str;
+    uint8_t     format;
+} R8EChatTemplate_Stub;
+
+typedef struct {
+    const char *role;
+    const char *content;
+} R8EChatMessage_Stub;
+
+WEAK R8EChatTemplate_Stub *r8e_chat_template_new(const char *template_str,
+                                                   const char *model_name,
+                                                   const char *bos,
+                                                   const char *eos) {
+    (void)template_str; (void)model_name; (void)bos; (void)eos;
+    return NULL;
+}
+
+WEAK void r8e_chat_template_free(R8EChatTemplate_Stub *t) { (void)t; }
+
+WEAK int r8e_chat_template_apply(const R8EChatTemplate_Stub *t,
+                                   const R8EChatMessage_Stub *messages,
+                                   int n_messages,
+                                   char *out_buf, int buf_cap) {
+    (void)t; (void)messages; (void)n_messages; (void)out_buf; (void)buf_cap;
+    return -1;
+}
+
+/* =========================================================================
+ * KV cache stubs (r8e_kvcache.h)
+ * ========================================================================= */
+
+typedef struct {
+    uint16_t *k_cache;
+    uint16_t *v_cache;
+    uint32_t  seq_len;
+    uint32_t  max_seq;
+    uint32_t  n_layers;
+    uint32_t  n_kv_heads;
+    uint32_t  d_head;
+} R8EKVCache_Stub;
+
+WEAK R8EKVCache_Stub *r8e_kv_cache_new(uint32_t n_layers, uint32_t max_seq,
+                                         uint32_t n_kv_heads, uint32_t d_head) {
+    (void)n_layers; (void)max_seq; (void)n_kv_heads; (void)d_head;
+    return NULL;
+}
+
+WEAK void r8e_kv_cache_free(R8EKVCache_Stub *cache) { (void)cache; }
+
+WEAK void r8e_kv_cache_write(R8EKVCache_Stub *cache, uint32_t layer,
+                               uint32_t pos, const float *k, const float *v) {
+    (void)cache; (void)layer; (void)pos; (void)k; (void)v;
+}
+
+WEAK const uint16_t *r8e_kv_cache_k(const R8EKVCache_Stub *cache,
+                                       uint32_t layer) {
+    (void)cache; (void)layer;
+    return NULL;
+}
+
+WEAK const uint16_t *r8e_kv_cache_v(const R8EKVCache_Stub *cache,
+                                       uint32_t layer) {
+    (void)cache; (void)layer;
+    return NULL;
+}
+
+WEAK void r8e_kv_cache_shift(R8EKVCache_Stub *cache, uint32_t shift_amount) {
+    (void)cache; (void)shift_amount;
+}
+
+WEAK void r8e_kv_cache_truncate(R8EKVCache_Stub *cache, uint32_t pos) {
+    (void)cache; (void)pos;
+}
+
+WEAK void r8e_kv_cache_reset(R8EKVCache_Stub *cache) { (void)cache; }
+
+WEAK uint16_t r8e_f32_to_f16(float f) { (void)f; return 0; }
+WEAK float r8e_f16_to_f32(uint16_t h) { (void)h; return 0.0f; }
+
+/* =========================================================================
+ * Sampler stubs (r8e_sampler.h)
+ * ========================================================================= */
+
+typedef struct {
+    float    temperature;
+    float    top_p;
+    int32_t  top_k;
+    float    repeat_penalty;
+    int32_t  repeat_window;
+    uint64_t seed;
+} R8ESamplerConfig_Stub;
+
+WEAK int r8e_sample(float *logits, int vocab_size,
+                      const R8ESamplerConfig_Stub *config,
+                      const int *recent_tokens, int recent_count) {
+    (void)logits; (void)vocab_size; (void)config;
+    (void)recent_tokens; (void)recent_count;
+    return -1;
+}
+
+WEAK int r8e_sample_greedy(const float *logits, int vocab_size) {
+    (void)logits; (void)vocab_size;
+    return -1;
+}
+
+WEAK void r8e_sample_apply_temperature(float *logits, int vocab_size,
+                                         float temperature) {
+    (void)logits; (void)vocab_size; (void)temperature;
+}
+
+WEAK void r8e_sample_apply_repeat_penalty(float *logits, int vocab_size,
+                                            const int *recent, int recent_count,
+                                            float penalty) {
+    (void)logits; (void)vocab_size; (void)recent; (void)recent_count;
+    (void)penalty;
+}
+
+WEAK void r8e_softmax(float *logits, int n) {
+    (void)logits; (void)n;
+}
+
+WEAK void r8e_sample_top_k(float *logits, int vocab_size, int k) {
+    (void)logits; (void)vocab_size; (void)k;
+}
+
+WEAK void r8e_sample_top_p(float *logits, int vocab_size, float p) {
+    (void)logits; (void)vocab_size; (void)p;
+}
