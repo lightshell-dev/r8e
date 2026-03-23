@@ -322,6 +322,22 @@ R8EStatus r8e_set_prop(R8EContext *ctx, R8EValue obj, const char *name,
                        R8EValue val);
 
 /**
+ * Define an accessor property (getter/setter) on an object.
+ *
+ * When get_prop is called on this property, the getter function is invoked.
+ * When set_prop is called, the setter function is invoked.
+ *
+ * @param ctx     Engine context.
+ * @param obj     Object value.
+ * @param name    Property name (C string).
+ * @param getter  Getter function value (R8E_UNDEFINED for no getter).
+ * @param setter  Setter function value (R8E_UNDEFINED for no setter).
+ * @return        R8E_OK on success, error code on failure.
+ */
+R8EStatus r8e_define_accessor(R8EContext *ctx, R8EValue obj, const char *name,
+                                R8EValue getter, R8EValue setter);
+
+/**
  * Delete a property by name.
  *
  * @param ctx   Engine context.

@@ -610,6 +610,76 @@ TEST(api_realm_create_and_switch) {
 }
 
 /* =========================================================================
+ * Accessor property tests
+ * ========================================================================= */
+
+static R8EValue test_getter(R8EContext *ctx, R8EValue this_val, int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val; (void)argc; (void)argv;
+    return r8e_from_int32(42);
+}
+
+static R8EValue test_setter(R8EContext *ctx, R8EValue this_val, int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val; (void)argc; (void)argv;
+    /* Could track that setter was called */
+    return R8E_UNDEFINED;
+}
+
+/*
+ * Test: Define a getter on an object, get_prop should invoke it and return 42.
+ */
+TEST(api_define_accessor_getter) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EValue obj = r8e_make_object(ctx);
+    ASSERT_TRUE(R8E_IS_POINTER(obj));
+
+    R8EValue getter_fn = r8e_make_native_func(ctx, test_getter, "get_x", 0);
+    ASSERT_TRUE(r8e_is_function(getter_fn));
+
+    R8EStatus st = r8e_define_accessor(ctx, obj, "x", getter_fn, R8E_UNDEFINED);
+    ASSERT_TRUE(st == R8E_OK);
+
+    /* get_prop should invoke the getter and return 42 */
+    R8EValue got = r8e_get_prop(ctx, obj, "x");
+    ASSERT_TRUE(R8E_IS_INT32(got));
+    ASSERT_TRUE(r8e_get_int32(got) == 42);
+
+    r8e_context_free(ctx);
+}
+
+/*
+ * Test: Define a setter on an object, set_prop should invoke it (not crash).
+ */
+TEST(api_define_accessor_setter) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EValue obj = r8e_make_object(ctx);
+    ASSERT_TRUE(R8E_IS_POINTER(obj));
+
+    R8EValue setter_fn = r8e_make_native_func(ctx, test_setter, "set_x", 1);
+    ASSERT_TRUE(r8e_is_function(setter_fn));
+
+    R8EValue getter_fn = r8e_make_native_func(ctx, test_getter, "get_x", 0);
+    ASSERT_TRUE(r8e_is_function(getter_fn));
+
+    R8EStatus st = r8e_define_accessor(ctx, obj, "x", getter_fn, setter_fn);
+    ASSERT_TRUE(st == R8E_OK);
+
+    /* set_prop should invoke the setter (not overwrite the accessor) */
+    R8EStatus st2 = r8e_set_prop(ctx, obj, "x", r8e_from_int32(99));
+    ASSERT_TRUE(st2 == R8E_OK);
+
+    /* getter should still work (accessor not overwritten) */
+    R8EValue got = r8e_get_prop(ctx, obj, "x");
+    ASSERT_TRUE(R8E_IS_INT32(got));
+    ASSERT_TRUE(r8e_get_int32(got) == 42);
+
+    r8e_context_free(ctx);
+}
+
+/* =========================================================================
  * Module system API tests
  * ========================================================================= */
 
@@ -664,6 +734,8 @@ void run_api_wire_tests(void) {
     RUN_TEST(api_throw_and_clear_exception);
     RUN_TEST(api_throw_error_message);
     RUN_TEST(api_realm_create_and_switch);
+    RUN_TEST(api_define_accessor_getter);
+    RUN_TEST(api_define_accessor_setter);
     RUN_TEST(api_set_module_loader_no_crash);
     RUN_TEST(api_eval_module_basic);
 }

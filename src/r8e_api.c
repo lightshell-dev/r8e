@@ -711,6 +711,34 @@ typedef struct {
     ApiPropPair *buckets;
 } ApiObjTier3;
 
+/* GC kind for accessor descriptors (bits [7:5] = 7) */
+#define API_GC_KIND_ACCESSOR    7u
+
+/* Accessor property descriptor: holds getter and setter function values */
+typedef struct {
+    uint32_t  flags;       /* GC header: kind = API_GC_KIND_ACCESSOR */
+    uint32_t  reserved;
+    R8EValue  getter;      /* getter function value, or R8E_UNDEFINED */
+    R8EValue  setter;      /* setter function value, or R8E_UNDEFINED */
+} ApiAccessorDesc;
+
+/* Check if a value is an accessor descriptor */
+static inline bool api_is_accessor(R8EValue v) {
+    if (!R8E_IS_POINTER(v)) return false;
+    uint32_t *flags = (uint32_t *)(void *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
+    if (!flags) return false;
+    uint8_t kind = (*flags >> API_OBJ_GC_KIND_SHIFT) & 0x7;
+    return kind == API_GC_KIND_ACCESSOR;
+}
+
+/* Forward declaration for native function struct (defined later in this file) */
+typedef struct ApiNativeFuncInterp ApiNativeFuncInterp;
+
+/* Invoke a native function callback directly (avoids creating interp context) */
+static R8EValue api_call_native(R8EContext *ctx, R8EValue func, R8EValue this_val,
+                                 int argc, const R8EValue *argv);
+
+
 /* Extern: atom interning */
 extern uint32_t r8e_atom_intern_cstr(void *ctx, const char *cstr);
 
@@ -738,7 +766,6 @@ R8EValue r8e_get_prop(R8EContext *ctx, R8EValue obj, const char *name) {
 }
 
 R8EValue r8e_get_prop_atom(R8EContext *ctx, R8EValue obj, uint32_t atom) {
-    (void)ctx;
     if (!R8E_IS_POINTER(obj)) return R8E_UNDEFINED;
 
     void *ptr = r8e_get_pointer(obj);
@@ -750,20 +777,21 @@ R8EValue r8e_get_prop_atom(R8EContext *ctx, R8EValue obj, uint32_t atom) {
 
     uint8_t tier = flags & 0x03;
     R8EValue key = API_ATOM_TAG | (uint64_t)atom;
+    R8EValue raw = R8E_UNDEFINED;
 
     if (tier == 0) {
         ApiObjTier0 *t0 = (ApiObjTier0 *)ptr;
-        if (t0->key0 == key) return t0->val0;
+        if (t0->key0 == key) raw = t0->val0;
     } else if (tier == 1) {
         ApiObjTier1 *t1 = (ApiObjTier1 *)ptr;
         for (uint8_t i = 0; i < t1->count; i++) {
-            if (t1->props[i].key == key) return t1->props[i].val;
+            if (t1->props[i].key == key) { raw = t1->props[i].val; break; }
         }
     } else if (tier == 2) {
         ApiObjTier2 *t2 = (ApiObjTier2 *)ptr;
         if (t2->props) {
             for (uint8_t i = 0; i < t2->count; i++) {
-                if (t2->props[i].key == key) return t2->props[i].val;
+                if (t2->props[i].key == key) { raw = t2->props[i].val; break; }
             }
         }
     } else if (tier == 3) {
@@ -773,14 +801,23 @@ R8EValue r8e_get_prop_atom(R8EContext *ctx, R8EValue obj, uint32_t atom) {
             uint32_t idx = atom & mask;
             for (uint16_t probe = 0; probe < t3->capacity; probe++) {
                 R8EValue bkey = t3->buckets[idx].key;
-                if (bkey == key) return t3->buckets[idx].val;
+                if (bkey == key) { raw = t3->buckets[idx].val; break; }
                 if (bkey == 0) break; /* empty slot */
                 idx = (idx + 1) & mask;
             }
         }
     }
 
-    return R8E_UNDEFINED;
+    /* If the value is an accessor descriptor, invoke the getter */
+    if (api_is_accessor(raw)) {
+        ApiAccessorDesc *acc = (ApiAccessorDesc *)(void *)(uintptr_t)(raw & 0x0000FFFFFFFFFFFFULL);
+        if (acc && !R8E_IS_UNDEFINED(acc->getter)) {
+            return api_call_native(ctx, acc->getter, obj, 0, NULL);
+        }
+        return R8E_UNDEFINED; /* no getter defined */
+    }
+
+    return raw;
 }
 
 R8EStatus r8e_set_prop(R8EContext *ctx, R8EValue obj, const char *name,
@@ -795,7 +832,6 @@ R8EStatus r8e_set_prop(R8EContext *ctx, R8EValue obj, const char *name,
 
 R8EStatus r8e_set_prop_atom(R8EContext *ctx, R8EValue obj, uint32_t atom,
                             R8EValue val) {
-    (void)ctx;
     if (!R8E_IS_POINTER(obj)) return R8E_ERROR;
 
     void *ptr = r8e_get_pointer(obj);
@@ -808,9 +844,27 @@ R8EStatus r8e_set_prop_atom(R8EContext *ctx, R8EValue obj, uint32_t atom,
     uint8_t tier = flags & 0x03;
     R8EValue key = API_ATOM_TAG | (uint64_t)atom;
 
+    /* Helper macro: check if existing value is an accessor and invoke setter */
+    #define CHECK_ACCESSOR_SET(existing_val) do {                          \
+        if (api_is_accessor(existing_val)) {                               \
+            ApiAccessorDesc *acc = (ApiAccessorDesc *)(void *)(uintptr_t)  \
+                ((existing_val) & 0x0000FFFFFFFFFFFFULL);                  \
+            if (acc && !R8E_IS_UNDEFINED(acc->setter)) {                   \
+                api_call_native(ctx, acc->setter, obj, 1, &val);           \
+                return R8E_OK;                                             \
+            }                                                              \
+            return R8E_ERROR; /* no setter defined */                       \
+        }                                                                  \
+    } while (0)
+
     if (tier == 0) {
         ApiObjTier0 *t0 = (ApiObjTier0 *)ptr;
-        if (t0->key0 == 0 || t0->key0 == key) {
+        if (t0->key0 == key) {
+            CHECK_ACCESSOR_SET(t0->val0);
+            t0->val0 = val;
+            return R8E_OK;
+        }
+        if (t0->key0 == 0) {
             t0->key0 = key;
             t0->val0 = val;
             return R8E_OK;
@@ -821,6 +875,7 @@ R8EStatus r8e_set_prop_atom(R8EContext *ctx, R8EValue obj, uint32_t atom,
         /* Check for existing key */
         for (uint8_t i = 0; i < t1->count; i++) {
             if (t1->props[i].key == key) {
+                CHECK_ACCESSOR_SET(t1->props[i].val);
                 t1->props[i].val = val;
                 return R8E_OK;
             }
@@ -838,6 +893,7 @@ R8EStatus r8e_set_prop_atom(R8EContext *ctx, R8EValue obj, uint32_t atom,
         if (t2->props) {
             for (uint8_t i = 0; i < t2->count; i++) {
                 if (t2->props[i].key == key) {
+                    CHECK_ACCESSOR_SET(t2->props[i].val);
                     t2->props[i].val = val;
                     return R8E_OK;
                 }
@@ -851,6 +907,8 @@ R8EStatus r8e_set_prop_atom(R8EContext *ctx, R8EValue obj, uint32_t atom,
         }
         return R8E_ERROR;
     }
+
+    #undef CHECK_ACCESSOR_SET
 
     return R8E_ERROR;
 }
@@ -1128,7 +1186,7 @@ int32_t r8e_get_length(R8EContext *ctx, R8EValue v) {
  * ========================================================================= */
 
 /* Interpreter-compatible native function struct */
-typedef struct {
+struct ApiNativeFuncInterp {
     uint32_t      flags;
     uint32_t      proto_id;
     R8ENativeFunc callback;
@@ -1136,7 +1194,7 @@ typedef struct {
     int16_t       arity;
     uint8_t       func_flags;
     uint8_t       reserved;
-} ApiNativeFuncInterp;
+};
 
 R8EValue r8e_make_native_func(R8EContext *ctx, R8ENativeFunc func,
                                const char *name, int argc) {
@@ -1156,6 +1214,46 @@ R8EValue r8e_make_native_func(R8EContext *ctx, R8ENativeFunc func,
     nf->reserved = 0;
 
     return r8e_from_pointer(nf);
+}
+
+
+/* =========================================================================
+ * Accessor property support: api_call_native + r8e_define_accessor
+ * ========================================================================= */
+
+/* Invoke a native function callback directly */
+static R8EValue api_call_native(R8EContext *ctx, R8EValue func, R8EValue this_val,
+                                 int argc, const R8EValue *argv) {
+    if (!R8E_IS_POINTER(func)) return R8E_UNDEFINED;
+    void *ptr = (void *)(uintptr_t)(func & 0x0000FFFFFFFFFFFFULL);
+    if (!ptr) return R8E_UNDEFINED;
+    uint32_t flags = *(uint32_t *)ptr;
+    uint8_t kind = (flags >> API_OBJ_GC_KIND_SHIFT) & 0x7;
+    /* kind 5 = native function (from r8e_make_native_func) */
+    if (kind == 5) {
+        struct ApiNativeFuncInterp *nf = (struct ApiNativeFuncInterp *)ptr;
+        if (nf->callback)
+            return nf->callback(ctx, this_val, argc, argv);
+    }
+    /* For closures/JS functions, fall back to r8e_call */
+    return r8e_call(ctx, func, this_val, argc, argv);
+}
+
+R8EStatus r8e_define_accessor(R8EContext *ctx, R8EValue obj, const char *name,
+                                R8EValue getter, R8EValue setter) {
+    if (!ctx || !name || !R8E_IS_POINTER(obj)) return R8E_ERROR;
+
+    /* Allocate an accessor descriptor */
+    ApiAccessorDesc *desc = (ApiAccessorDesc *)calloc(1, sizeof(ApiAccessorDesc));
+    if (!desc) return R8E_ERROR_OOM;
+
+    desc->flags = (API_GC_KIND_ACCESSOR << API_OBJ_GC_KIND_SHIFT);
+    desc->getter = getter;
+    desc->setter = setter;
+
+    /* Store the accessor descriptor as the property value */
+    R8EValue desc_val = r8e_from_pointer(desc);
+    return r8e_set_prop(ctx, obj, name, desc_val);
 }
 
 
