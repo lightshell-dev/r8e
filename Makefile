@@ -102,8 +102,12 @@ SRCS_UI = \
 	src/ui/r8e_paint.c \
 	src/ui/r8e_event.c
 
+# GPU module sources
+SRCS_GPU = \
+	src/gpu/r8e_display_list.c
+
 # All sources
-SRCS = $(SRCS_CORE) $(SRCS_SECURITY) $(SRCS_UI) $(SRCS_AI) $(SRCS_MCP)
+SRCS = $(SRCS_CORE) $(SRCS_SECURITY) $(SRCS_UI) $(SRCS_GPU) $(SRCS_AI) $(SRCS_MCP)
 
 # Headers
 HDRS = \
