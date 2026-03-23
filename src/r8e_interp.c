@@ -1533,8 +1533,19 @@ static R8EValue r8e_interp_call_internal(R8EInterpContext *ctx,
     R8EGCHeader *h = (R8EGCHeader *)ptr;
     uint32_t kind = R8E_GC_GET_KIND(h->flags);
 
-    /* Native function call */
+    /* Native function call (shifted encoding from r8e_interp.c) */
     if (kind == R8E_GC_KIND_FUNCTION) {
+        R8ENativeFuncObj *nf = (R8ENativeFuncObj *)ptr;
+        if (nf->callback) {
+            return nf->callback(ctx, this_val, argc, argv);
+        }
+        r8e_interp_throw_type_error(ctx, "native function has no callback");
+        return R8E_UNDEFINED;
+    }
+
+    /* Native function call (bottom-nibble encoding from r8e_builtin.c/r8e_weakref.c)
+     * R8E_GC_KIND_FUNC = 0x04 stored directly in flags low nibble */
+    if ((h->flags & 0x0Fu) == 0x04u && kind == R8E_GC_KIND_OBJECT) {
         R8ENativeFuncObj *nf = (R8ENativeFuncObj *)ptr;
         if (nf->callback) {
             return nf->callback(ctx, this_val, argc, argv);
@@ -3905,36 +3916,67 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
         /*
          * Tagged template: tag`str0${expr0}str1${expr1}str2`
          *
-         * Stack layout (from bottom to top):
-         *   tag_func, strings_array, expr0, expr1, ...
+         * Stack layout (from bottom to top), interleaved:
+         *   tag_func, str0, expr0, str1, expr1, ..., strN
          *
          * argc_op = number of expressions (interpolated values).
-         * The strings array is always one more than the expressions.
+         * string_count = argc_op + 1.
+         * Total stack items = 1 (tag) + string_count + argc_op
+         *                   = 1 + 2*argc_op + 1 = 2 + 2*argc_op.
          *
-         * Call: tag(strings, expr0, expr1, ...)
+         * We build a strings array at runtime, then call:
+         *   tag(strings_array, expr0, expr1, ...)
          */
         {
-            /* The expressions are on top of the stack */
-            R8EValue *tt_exprs = sp - argc_op;
-            R8EValue tt_strings = tt_exprs[-1]; /* strings array below exprs */
-            R8EValue tt_tag = tt_exprs[-2];     /* tag function below strings */
+            int tt_str_count = (int)argc_op + 1;
+            int tt_total_items = tt_str_count + (int)argc_op; /* strings + exprs */
+            R8EValue *tt_base = sp - tt_total_items; /* points to str0 */
+            R8EValue tt_tag = tt_base[-1]; /* tag function below the items */
 
-            /* Build argument list: [strings, ...exprs] */
+            /* Build the strings array */
+            R8EArrayInterp *tt_arr = (R8EArrayInterp *)calloc(
+                1, sizeof(R8EArrayInterp));
+            if (!tt_arr) {
+                sp -= tt_total_items + 1;
+                PUSH(R8E_UNDEFINED);
+                DISPATCH();
+            }
+            tt_arr->flags = (R8E_GC_KIND_ARRAY << R8E_GC_KIND_SHIFT);
+            tt_arr->proto_id = 2; /* PROTO_ARRAY */
+            tt_arr->length = tt_str_count;
+            tt_arr->capacity = tt_str_count;
+            tt_arr->elements = (R8EValue *)calloc(tt_str_count, sizeof(R8EValue));
+            tt_arr->named = NULL;
+            if (!tt_arr->elements) {
+                free(tt_arr);
+                sp -= tt_total_items + 1;
+                PUSH(R8E_UNDEFINED);
+                DISPATCH();
+            }
+
+            /* Extract strings (at even positions: 0, 2, 4, ...) */
+            for (int ti = 0; ti < tt_str_count; ti++) {
+                tt_arr->elements[ti] = tt_base[ti * 2];
+            }
+            R8EValue tt_strings_val = r8e_interp_from_pointer(tt_arr);
+
+            /* Build argument list: [strings_array, expr0, expr1, ...] */
             int tt_total_argc = 1 + (int)argc_op;
             R8EValue *tt_args = (R8EValue *)malloc(
                 tt_total_argc * sizeof(R8EValue));
             if (!tt_args) {
-                sp -= argc_op + 2;
+                sp -= tt_total_items + 1;
                 PUSH(R8E_UNDEFINED);
                 DISPATCH();
             }
-            tt_args[0] = tt_strings;
+            tt_args[0] = tt_strings_val;
+            /* Extract expressions (at odd positions: 1, 3, 5, ...) */
             for (int ti = 0; ti < (int)argc_op; ti++) {
-                tt_args[1 + ti] = tt_exprs[ti];
+                tt_args[1 + ti] = tt_base[ti * 2 + 1];
             }
 
-            /* Pop everything: exprs + strings + tag */
-            sp -= argc_op + 2;
+            /* Pop everything: all items + tag */
+            sp -= tt_total_items + 1;
 
             /* Call the tag function */
             frame->pc = pc;

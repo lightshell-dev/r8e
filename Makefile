@@ -82,7 +82,8 @@ SRCS_CORE = \
 	src/r8e_promise.c \
 	src/r8e_iterator.c \
 	src/r8e_proxy.c \
-	src/r8e_weakref.c
+	src/r8e_weakref.c \
+	src/r8e_raf.c
 
 # Security module sources
 SRCS_SECURITY = \
@@ -95,6 +96,7 @@ SRCS_SECURITY = \
 # UI module sources
 SRCS_UI = \
 	src/ui/r8e_dom.c \
+	src/ui/r8e_dom_bridge.c \
 	src/ui/r8e_style.c \
 	src/ui/r8e_layout.c \
 	src/ui/r8e_paint.c \

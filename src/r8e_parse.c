@@ -1101,8 +1101,59 @@ static void parse_call_expr(R8EParser *p)
             }
             patch_jump(p, skip);
         } else {
-            /* Tagged template literal */
-            break; /* TODO: tagged templates */
+            /* Tagged template literal: tag`str0${expr}str1`
+             *
+             * The tag function is already on the stack from parse_member_expr.
+             * We emit interleaved string pushes and expression code:
+             *   stack: tag_func, str0, expr0, str1, expr1, ..., strN
+             * Then OP_TAGGED_TEMPLATE(expr_count) builds the strings array
+             * at runtime and calls the tag function.
+             */
+            if (r8e_check(p, R8E_TOK_TEMPLATE_FULL)) {
+                /* tag`string` - no interpolations */
+                const char *str = p->cur.str_val.str;
+                uint32_t len = p->cur.str_val.len;
+                r8e_advance(p);
+                uint32_t atom = r8e_parser_intern(p, str, len);
+                int idx = r8e_bc_add_constant(p->bc, r8e_from_atom(atom));
+                if (idx >= 0) emit_op_u16(p, R8E_OP_PUSH_STRING, (uint16_t)idx);
+                emit_op_u8(p, R8E_OP_TAGGED_TEMPLATE, 0);
+            } else if (r8e_check(p, R8E_TOK_TEMPLATE_HEAD)) {
+                /* tag`head${expr}middle${expr}tail` */
+                const char *str = p->cur.str_val.str;
+                uint32_t len = p->cur.str_val.len;
+                r8e_advance(p);
+                uint32_t atom = r8e_parser_intern(p, str, len);
+                int idx = r8e_bc_add_constant(p->bc, r8e_from_atom(atom));
+                if (idx >= 0) emit_op_u16(p, R8E_OP_PUSH_STRING, (uint16_t)idx);
+
+                int expr_count = 0;
+                for (;;) {
+                    parse_expression(p);
+                    expr_count++;
+
+                    if (r8e_check(p, R8E_TOK_TEMPLATE_TAIL)) {
+                        str = p->cur.str_val.str;
+                        len = p->cur.str_val.len;
+                        r8e_advance(p);
+                        atom = r8e_parser_intern(p, str, len);
+                        idx = r8e_bc_add_constant(p->bc, r8e_from_atom(atom));
+                        if (idx >= 0) emit_op_u16(p, R8E_OP_PUSH_STRING, (uint16_t)idx);
+                        break;
+                    } else if (r8e_check(p, R8E_TOK_TEMPLATE_MIDDLE)) {
+                        str = p->cur.str_val.str;
+                        len = p->cur.str_val.len;
+                        r8e_advance(p);
+                        atom = r8e_parser_intern(p, str, len);
+                        idx = r8e_bc_add_constant(p->bc, r8e_from_atom(atom));
+                        if (idx >= 0) emit_op_u16(p, R8E_OP_PUSH_STRING, (uint16_t)idx);
+                    } else {
+                        r8e_parse_error(p, "unterminated tagged template literal");
+                        break;
+                    }
+                }
+                emit_op_u8(p, R8E_OP_TAGGED_TEMPLATE, (uint8_t)expr_count);
+            }
         }
     }
 }

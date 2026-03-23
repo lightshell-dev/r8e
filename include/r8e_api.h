@@ -650,7 +650,39 @@ R8EContext *r8e_context_new_alloc(const R8EAllocator *alloc);
 
 
 /* =========================================================================
- * Section 13: Utility
+ * Section 13: requestAnimationFrame / cancelAnimationFrame
+ * ========================================================================= */
+
+/**
+ * Request a callback to fire before the next render frame.
+ * Returns a non-zero ID that can be passed to r8e_raf_cancel.
+ */
+uint32_t r8e_raf_request(R8EContext *ctx, R8EValue callback);
+
+/**
+ * Cancel a pending animation frame callback.
+ */
+void r8e_raf_cancel(R8EContext *ctx, uint32_t id);
+
+/**
+ * Fire all pending rAF callbacks. Called by the platform event loop.
+ * Callbacks registered during firing go into the next frame.
+ */
+void r8e_raf_tick(R8EContext *ctx);
+
+/**
+ * Reset rAF state (for tests).
+ */
+void r8e_raf_reset(void);
+
+/**
+ * Register requestAnimationFrame and cancelAnimationFrame as globals.
+ */
+void r8e_raf_init(R8EContext *ctx);
+
+
+/* =========================================================================
+ * Section 14: Utility
  * ========================================================================= */
 
 /**
@@ -669,6 +701,36 @@ void r8e_dump_bytecode(const R8EFunction *func);
  * Dump value for debugging (writes to stderr).
  */
 void r8e_dump_value(R8EValue v);
+
+
+/* =========================================================================
+ * Section 14: DOM-to-JS Bridge (r8e_dom_bridge.c)
+ *
+ * Wraps C-side R8EUIDOMNode objects as JS objects with native property
+ * getters/setters for textContent, style, className, tree navigation,
+ * and DOM manipulation methods.
+ * ========================================================================= */
+
+/* Opaque forward declaration - full definition in r8e_dom.c */
+typedef struct R8EUIDOMNode R8EUIDOMNode;
+
+/**
+ * Wrap a C-side DOM node as a JS object with getters/setters.
+ *
+ * @param ctx   Engine context.
+ * @param node  DOM node to wrap.
+ * @return      JS object wrapping the node, or R8E_UNDEFINED on error.
+ */
+R8EValue r8e_ui_dom_wrap_element(R8EContext *ctx, R8EUIDOMNode *node);
+
+/**
+ * Initialize the DOM bridge: register the 'document' global with
+ * createElement, createTextNode, and body accessor.
+ *
+ * @param ctx   Engine context.
+ * @return      R8E_OK on success.
+ */
+R8EStatus r8e_ui_dom_bridge_init(R8EContext *ctx);
 
 
 #ifdef __cplusplus

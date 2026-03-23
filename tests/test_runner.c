@@ -256,6 +256,9 @@ void run_dom_additions_tests(void);
 /* Map/Set iterator tests */
 void run_map_set_iterator_tests(void);
 
+/* requestAnimationFrame tests */
+void run_raf_tests(void);
+
 /* =========================================================================
  * Main
  * ========================================================================= */
@@ -384,6 +387,7 @@ int main(int argc, char **argv) {
     run_suite_isolated("parse-async-await", run_parse_async_await_tests);
     run_suite_isolated("dom-additions", run_dom_additions_tests);
     run_suite_isolated("map-set-iterator", run_map_set_iterator_tests);
+    run_suite_isolated("raf", run_raf_tests);
 
     printf("=== Summary: %d passed, %d failed out of %d tests ===\n",
            g_tests_passed, g_tests_failed, g_tests_run);
