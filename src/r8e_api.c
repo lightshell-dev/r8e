@@ -141,6 +141,13 @@ R8EContext *r8e_context_new(void) {
 
 void r8e_context_free(R8EContext *ctx) {
     if (!ctx) return;
+    /* Free any allocated realms */
+    for (int i = 0; i < 16; i++) {
+        if (ctx->realms[i]) {
+            free(ctx->realms[i]);
+            ctx->realms[i] = NULL;
+        }
+    }
     /* Don't destroy the global atom table here - it's shared across all
      * contexts and managed separately. Other tests may still need it. */
     free(ctx);
@@ -1115,3 +1122,58 @@ R8EValue r8e_make_native_func(R8EContext *ctx, R8ENativeFunc func,
 
     return r8e_from_pointer(nf);
 }
+
+
+/* =========================================================================
+ * GC API wrappers
+ * ========================================================================= */
+
+/* Inline refcount is stored in bits [31:16] of the flags word (first uint32_t
+ * of every heap-allocated object). */
+#define API_GC_RC_INLINE_MASK   0xFFFF0000u
+#define API_GC_RC_INLINE_SHIFT  16
+
+/* r8e_gc_collect is defined in r8e_gc.c — do not redefine here */
+
+void r8e_gc_stats(const R8EContext *ctx, R8EMemStats *stats) {
+    if (!ctx || !stats) return;
+    memset(stats, 0, sizeof(*stats));
+    stats->total_allocated = ctx->total_allocated;
+    stats->total_freed = ctx->total_freed;
+    stats->current_usage = ctx->total_allocated - ctx->total_freed;
+    stats->epoch_threshold = ctx->epoch_threshold;
+}
+
+void r8e_value_retain(R8EValue v) {
+    if (!R8E_IS_POINTER(v)) return;
+    uint32_t *flags = (uint32_t *)(void *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
+    if (!flags) return;
+    uint32_t rc = (*flags & API_GC_RC_INLINE_MASK) >> API_GC_RC_INLINE_SHIFT;
+    if (rc < 0xFFFF) {
+        rc++;
+        *flags = (*flags & ~API_GC_RC_INLINE_MASK)
+               | (rc << API_GC_RC_INLINE_SHIFT);
+    }
+}
+
+void r8e_value_release(R8EContext *ctx, R8EValue v) {
+    (void)ctx;
+    if (!R8E_IS_POINTER(v)) return;
+    uint32_t *flags = (uint32_t *)(void *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
+    if (!flags) return;
+    uint32_t rc = (*flags & API_GC_RC_INLINE_MASK) >> API_GC_RC_INLINE_SHIFT;
+    if (rc > 0) {
+        rc--;
+        *flags = (*flags & ~API_GC_RC_INLINE_MASK)
+               | (rc << API_GC_RC_INLINE_SHIFT);
+    }
+    /* Note: full release (freeing children + the object) is not done here
+     * since the API layer objects are managed by the interpreter's GC.
+     * This just decrements the refcount. */
+}
+
+
+/* Error throwing, clear_exception, gc_collect, and realm management
+ * functions are provided by r8e_error.c, r8e_gc.c, and r8e_realm.c
+ * respectively. They use their own internal R8EContext layouts.
+ * See r8e_test_stubs.c for weak fallback stubs used in test builds. */

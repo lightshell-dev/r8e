@@ -244,6 +244,9 @@ void run_api_wire_tests(void);
 /* Parser member assignment tests */
 void run_parse_member_assign_tests(void);
 
+/* Parser destructuring tests */
+void run_parse_destructuring_tests(void);
+
 /* =========================================================================
  * Main
  * ========================================================================= */
@@ -368,6 +371,7 @@ int main(int argc, char **argv) {
     run_suite_isolated("mcp-jsonrpc", run_mcp_jsonrpc_tests);
     run_suite_isolated("api-wire", run_api_wire_tests);
     run_suite_isolated("parse-member-assign", run_parse_member_assign_tests);
+    run_suite_isolated("parse-destructuring", run_parse_destructuring_tests);
 
     printf("=== Summary: %d passed, %d failed out of %d tests ===\n",
            g_tests_passed, g_tests_failed, g_tests_run);

@@ -1665,10 +1665,206 @@ static void parse_var_declaration(R8EParser *p, R8ETokenType kind)
     else if (kind == R8E_TOK_KW_LET) var_flags = R8E_VAR_IS_LET;
 
     do {
-        if (r8e_check(p, R8E_TOK_LBRACE) || r8e_check(p, R8E_TOK_LBRACKET)) {
-            /* Destructuring: const { a, b } = obj or const [a, b] = arr */
-            /* TODO: implement destructuring declarations */
-            r8e_parse_error(p, "destructuring declarations not yet supported");
+        if (r8e_check(p, R8E_TOK_LBRACE)) {
+            /* Object destructuring: const { a, b } = obj
+             * With rename: const { a: myA } = obj
+             * With defaults: const { a, b = 99 } = obj
+             *
+             * Approach: collect binding metadata (prop atom, register, default
+             * numeric value) in a first pass over the pattern tokens, then
+             * parse the RHS, then emit extraction bytecode.
+             */
+            r8e_advance(p); /* consume '{' */
+
+            typedef struct {
+                uint32_t prop_atom;
+                int reg;
+                bool has_default;
+                double default_val;  /* numeric default value */
+            } ObjBinding;
+            ObjBinding bindings[256];
+            int bind_count = 0;
+
+            while (!r8e_check(p, R8E_TOK_RBRACE) && !r8e_parser_at_end(p)) {
+                if (bind_count >= 256) {
+                    r8e_parse_error(p, "too many destructuring bindings");
+                    return;
+                }
+                r8e_consume(p, R8E_TOK_IDENT, "expected property name in destructuring");
+                uint32_t prop_atom = r8e_parser_intern(p, p->prev.str_val.str,
+                                                        p->prev.str_val.len);
+                uint32_t local_atom = prop_atom;
+
+                /* Check for rename: { x: myX } */
+                if (r8e_match(p, R8E_TOK_COLON)) {
+                    r8e_consume(p, R8E_TOK_IDENT, "expected variable name after ':'");
+                    local_atom = r8e_parser_intern(p, p->prev.str_val.str,
+                                                    p->prev.str_val.len);
+                }
+
+                int reg = define_var(p, local_atom, var_flags);
+                if (reg < 0) return;
+
+                bindings[bind_count].prop_atom = prop_atom;
+                bindings[bind_count].reg = reg;
+                bindings[bind_count].has_default = false;
+                bindings[bind_count].default_val = 0;
+
+                /* Check for default: { a = 5 } */
+                if (r8e_match(p, R8E_TOK_ASSIGN)) {
+                    /* For now, only support numeric literal defaults */
+                    if (r8e_check(p, R8E_TOK_NUMBER)) {
+                        bindings[bind_count].has_default = true;
+                        bindings[bind_count].default_val = p->cur.num_val;
+                        r8e_advance(p); /* consume the number */
+                    } else {
+                        r8e_parse_error(p, "only numeric literal defaults supported in destructuring");
+                        return;
+                    }
+                }
+
+                bind_count++;
+
+                if (!r8e_check(p, R8E_TOK_RBRACE)) {
+                    r8e_consume(p, R8E_TOK_COMMA, "expected ',' or '}' in destructuring");
+                }
+            }
+
+            r8e_consume(p, R8E_TOK_RBRACE, "expected '}' after destructuring pattern");
+            r8e_consume(p, R8E_TOK_ASSIGN, "expected '=' after destructuring pattern");
+
+            /* Evaluate the RHS expression */
+            parse_assignment_expr(p);
+
+            /* Emit extraction for each binding */
+            for (int i = 0; i < bind_count; i++) {
+                if (i < bind_count - 1) {
+                    emit_op(p, R8E_OP_DUP);
+                }
+                emit_op_u32(p, R8E_OP_GET_PROP, bindings[i].prop_atom);
+
+                if (bindings[i].has_default) {
+                    /* Emit: DUP, JUMP_IF_NULLISH→use_default, JUMP→end,
+                     *       use_default: DROP, push_default, end: STORE_LOCAL */
+                    emit_op(p, R8E_OP_DUP);
+                    uint32_t nullish_jump = emit_jump(p, R8E_OP_JUMP_IF_NULLISH);
+                    uint32_t skip_default = emit_jump(p, R8E_OP_JUMP);
+                    patch_jump(p, nullish_jump);
+                    emit_op(p, R8E_OP_DROP);
+
+                    /* Emit the default numeric value */
+                    double dv = bindings[i].default_val;
+                    long ival = (long)dv;
+                    if (dv == (double)ival && dv >= -2147483648.0 && dv <= 2147483647.0) {
+                        if (ival == 0) emit_op(p, R8E_OP_PUSH_ZERO);
+                        else if (ival == 1) emit_op(p, R8E_OP_PUSH_ONE);
+                        else if (ival >= -128 && ival <= 127)
+                            emit_op_u8(p, R8E_OP_PUSH_INT8, (uint8_t)(int8_t)ival);
+                        else if (ival >= -32768 && ival <= 32767)
+                            emit_op_u16(p, R8E_OP_PUSH_INT16, (uint16_t)(int16_t)ival);
+                        else
+                            emit_op_u32(p, R8E_OP_PUSH_INT32, (uint32_t)(int32_t)ival);
+                    } else {
+                        /* Floating point — use constant pool */
+                        emit_constant(p, r8e_from_double(dv));
+                    }
+
+                    patch_jump(p, skip_default);
+                }
+
+                emit_op_u8(p, R8E_OP_STORE_LOCAL, (uint8_t)bindings[i].reg);
+            }
+
+            consume_semicolon(p);
+            return;
+        }
+
+        if (r8e_check(p, R8E_TOK_LBRACKET)) {
+            /* Array destructuring: const [x, y, z] = arr */
+            r8e_advance(p); /* consume '[' */
+
+            typedef struct {
+                int reg;
+                int index;
+                bool is_hole;
+            } ArrBinding;
+            ArrBinding bindings[256];
+            int bind_count = 0;
+            int elem_index = 0;
+
+            while (!r8e_check(p, R8E_TOK_RBRACKET) && !r8e_parser_at_end(p)) {
+                if (bind_count >= 256) {
+                    r8e_parse_error(p, "too many destructuring bindings");
+                    return;
+                }
+
+                if (r8e_check(p, R8E_TOK_COMMA)) {
+                    /* Hole/elision */
+                    bindings[bind_count].reg = -1;
+                    bindings[bind_count].index = elem_index;
+                    bindings[bind_count].is_hole = true;
+                    bind_count++;
+                    elem_index++;
+                    r8e_advance(p); /* consume ',' */
+                    continue;
+                }
+
+                r8e_consume(p, R8E_TOK_IDENT, "expected variable name in array destructuring");
+                uint32_t local_atom = r8e_parser_intern(p, p->prev.str_val.str,
+                                                         p->prev.str_val.len);
+                int reg = define_var(p, local_atom, var_flags);
+                if (reg < 0) return;
+
+                bindings[bind_count].reg = reg;
+                bindings[bind_count].index = elem_index;
+                bindings[bind_count].is_hole = false;
+                bind_count++;
+                elem_index++;
+
+                if (!r8e_check(p, R8E_TOK_RBRACKET)) {
+                    r8e_consume(p, R8E_TOK_COMMA, "expected ',' or ']' in array destructuring");
+                }
+            }
+
+            r8e_consume(p, R8E_TOK_RBRACKET, "expected ']' after array destructuring");
+            r8e_consume(p, R8E_TOK_ASSIGN, "expected '=' after destructuring pattern");
+
+            /* Evaluate the RHS expression */
+            parse_assignment_expr(p);
+
+            /* Emit extraction for each non-hole binding */
+            for (int i = 0; i < bind_count; i++) {
+                if (bindings[i].is_hole) continue;
+
+                /* Check if this is the last non-hole binding */
+                bool is_last_non_hole = true;
+                for (int j = i + 1; j < bind_count; j++) {
+                    if (!bindings[j].is_hole) {
+                        is_last_non_hole = false;
+                        break;
+                    }
+                }
+
+                if (!is_last_non_hole) {
+                    emit_op(p, R8E_OP_DUP);
+                }
+
+                /* Push the index */
+                int idx = bindings[i].index;
+                if (idx == 0) {
+                    emit_op(p, R8E_OP_PUSH_ZERO);
+                } else if (idx == 1) {
+                    emit_op(p, R8E_OP_PUSH_ONE);
+                } else if (idx >= -128 && idx <= 127) {
+                    emit_op_u8(p, R8E_OP_PUSH_INT8, (uint8_t)(int8_t)idx);
+                } else {
+                    emit_op_u16(p, R8E_OP_PUSH_INT16, (uint16_t)(int16_t)idx);
+                }
+                emit_op(p, R8E_OP_GET_ELEM);
+                emit_op_u8(p, R8E_OP_STORE_LOCAL, (uint8_t)bindings[i].reg);
+            }
+
+            consume_semicolon(p);
             return;
         }
 
