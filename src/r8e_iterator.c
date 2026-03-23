@@ -1400,7 +1400,9 @@ R8EValue r8e_iterator_next(R8EIterContext *ctx, R8EValue iter)
 
             case R8E_ITER_MAP_ENTRIES:
             case R8E_ITER_SET_VALUES:
-                /* Stub: Map/Set iterators not yet implemented */
+                /* Map/Set iterators are handled inline in the interpreter
+                 * (r8e_interp.c OP_FOR_OF_INIT/NEXT). This path is a
+                 * fallback that returns done=true. */
                 return r8e_create_iter_result(ctx, R8E_UNDEFINED, true);
 
             case R8E_ITER_GENERATOR:

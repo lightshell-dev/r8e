@@ -295,6 +295,77 @@ typedef struct {
     void     *named;
 } R8EArrayInterp;
 
+/* Map/Set entry structures (must match r8e_weakref.c layout) */
+#define R8E_GC_KIND_MAP_INTERP  0x0Cu
+#define R8E_GC_KIND_SET_INTERP  0x0Du
+
+typedef struct R8EMapEntryInterp {
+    R8EValue key;
+    R8EValue value;
+    uint32_t hash;
+    struct R8EMapEntryInterp *hash_next;
+    struct R8EMapEntryInterp *order_next;
+    struct R8EMapEntryInterp *order_prev;
+} R8EMapEntryInterp;
+
+typedef struct {
+    uint32_t              flags;
+    uint32_t              proto_id;
+    void                **buckets;
+    uint32_t              capacity;
+    uint32_t              count;
+    R8EMapEntryInterp    *order_first;
+    R8EMapEntryInterp    *order_last;
+} R8EMapInterp;
+
+typedef struct R8ESetEntryInterp {
+    R8EValue key;
+    uint32_t hash;
+    struct R8ESetEntryInterp *hash_next;
+    struct R8ESetEntryInterp *order_next;
+    struct R8ESetEntryInterp *order_prev;
+} R8ESetEntryInterp;
+
+typedef struct {
+    uint32_t              flags;
+    uint32_t              proto_id;
+    void                **buckets;
+    uint32_t              capacity;
+    uint32_t              count;
+    R8ESetEntryInterp    *order_first;
+    R8ESetEntryInterp    *order_last;
+} R8ESetInterp;
+
+/* Map/Set iterator structures (must match r8e_weakref.c) */
+#define R8E_GC_KIND_MAP_ITER_INTERP  0x0Eu
+#define R8E_GC_KIND_SET_ITER_INTERP  0x0Fu
+
+typedef struct {
+    uint32_t              flags;
+    uint32_t              proto_id;
+    R8EMapInterp         *map;
+    R8EMapEntryInterp    *current;
+    uint8_t               mode; /* 0=keys, 1=values, 2=entries */
+} R8EMapIteratorInterp;
+
+typedef struct {
+    uint32_t              flags;
+    uint32_t              proto_id;
+    R8ESetInterp         *set;
+    R8ESetEntryInterp    *current;
+    uint8_t               mode; /* 0=values, 1=entries */
+} R8ESetIteratorInterp;
+
+/* FOR_OF_INIT tag values for iterator kind */
+#define FO_TAG_ARRAY_STRING  0xFFFC00000FFF0002ULL
+#define FO_TAG_MAP           0xFFFC00000FFF0003ULL
+#define FO_TAG_SET           0xFFFC00000FFF0004ULL
+#define FO_TAG_MAP_KEYS      0xFFFC00000FFF0005ULL
+#define FO_TAG_MAP_VALUES    0xFFFC00000FFF0006ULL
+#define FO_TAG_MAP_ENTRIES   0xFFFC00000FFF0007ULL
+#define FO_TAG_SET_VALUES    0xFFFC00000FFF0008ULL
+#define FO_TAG_SET_ENTRIES   0xFFFC00000FFF0009ULL
+
 /* =========================================================================
  * Opcode enum (must match r8e_opcodes.h exactly)
  * ========================================================================= */
@@ -3551,6 +3622,13 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
         /*
          * Initialize for-of iterator. Same as GET_ITERATOR but
          * used specifically in for-of context.
+         *
+         * props[0].val = source object
+         * props[1].val = index (int32) for Array/String,
+         *                entry pointer for Map/Set
+         * props[1].key = tag: 0xFFFC00000FFF0002 for Array/String,
+         *                     0xFFFC00000FFF0003 for Map,
+         *                     0xFFFC00000FFF0004 for Set
          */
         {
             R8EObjTier1Interp *fo_iter = (R8EObjTier1Interp *)calloc(
@@ -3563,8 +3641,54 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
             fo_iter->count = 2;
             fo_iter->props[0].key = 0xFFFC00000FFF0001ULL;
             fo_iter->props[0].val = a;
-            fo_iter->props[1].key = 0xFFFC00000FFF0002ULL;
-            fo_iter->props[1].val = r8e_interp_from_int32(0);
+
+            /* Detect Map/Set and store first entry pointer.
+             * Note: Map/Set GC kinds use bottom nibble (r8e_weakref.c convention),
+             * not the R8E_GC_GET_KIND shifted field. */
+            if (R8E_IS_POINTER(a)) {
+                R8EGCHeader *init_h = (R8EGCHeader *)r8e_interp_get_pointer(a);
+                uint32_t init_kind_lo = init_h ? (init_h->flags & 0x0Fu) : 0;
+                if (init_kind_lo == R8E_GC_KIND_MAP_INTERP) {
+                    R8EMapInterp *init_map = (R8EMapInterp *)init_h;
+                    fo_iter->props[1].key = FO_TAG_MAP; /* Map: entries */
+                    fo_iter->props[1].val = init_map->order_first
+                        ? r8e_interp_from_pointer(init_map->order_first)
+                        : R8E_UNDEFINED;
+                } else if (init_kind_lo == R8E_GC_KIND_SET_INTERP) {
+                    R8ESetInterp *init_set = (R8ESetInterp *)init_h;
+                    fo_iter->props[1].key = FO_TAG_SET; /* Set: values */
+                    fo_iter->props[1].val = init_set->order_first
+                        ? r8e_interp_from_pointer(init_set->order_first)
+                        : R8E_UNDEFINED;
+                } else if (init_kind_lo == R8E_GC_KIND_MAP_ITER_INTERP) {
+                    /* Map iterator from .keys()/.values()/.entries() */
+                    R8EMapIteratorInterp *mi = (R8EMapIteratorInterp *)init_h;
+                    uint64_t tag;
+                    switch (mi->mode) {
+                    case 0: tag = FO_TAG_MAP_KEYS; break;
+                    case 1: tag = FO_TAG_MAP_VALUES; break;
+                    default: tag = FO_TAG_MAP_ENTRIES; break;
+                    }
+                    fo_iter->props[1].key = tag;
+                    fo_iter->props[1].val = mi->current
+                        ? r8e_interp_from_pointer(mi->current)
+                        : R8E_UNDEFINED;
+                } else if (init_kind_lo == R8E_GC_KIND_SET_ITER_INTERP) {
+                    /* Set iterator from .values()/.entries()/.keys() */
+                    R8ESetIteratorInterp *si = (R8ESetIteratorInterp *)init_h;
+                    uint64_t tag = (si->mode == 1) ? FO_TAG_SET_ENTRIES : FO_TAG_SET_VALUES;
+                    fo_iter->props[1].key = tag;
+                    fo_iter->props[1].val = si->current
+                        ? r8e_interp_from_pointer(si->current)
+                        : R8E_UNDEFINED;
+                } else {
+                    fo_iter->props[1].key = FO_TAG_ARRAY_STRING;
+                    fo_iter->props[1].val = r8e_interp_from_int32(0);
+                }
+            } else {
+                fo_iter->props[1].key = FO_TAG_ARRAY_STRING;
+                fo_iter->props[1].val = r8e_interp_from_int32(0);
+            }
             PUSH(r8e_interp_from_pointer(fo_iter));
         }
         DISPATCH();
@@ -3586,6 +3710,112 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
                     r8e_interp_get_pointer(fo_it);
                 if (fo_obj && fo_obj->count >= 2) {
                     R8EValue fo_source = fo_obj->props[0].val;
+                    R8EValue fo_tag = fo_obj->props[1].key;
+
+                    /* Map iteration: produce [key, value] pairs */
+                    if (fo_tag == FO_TAG_MAP || fo_tag == FO_TAG_MAP_ENTRIES) {
+                        R8EValue fo_cur = fo_obj->props[1].val;
+                        if (R8E_IS_POINTER(fo_cur)) {
+                            R8EMapEntryInterp *me = (R8EMapEntryInterp *)
+                                r8e_interp_get_pointer(fo_cur);
+                            if (me) {
+                                /* Create [key, value] pair array */
+                                R8EArrayInterp *pair = (R8EArrayInterp *)
+                                    calloc(1, sizeof(R8EArrayInterp));
+                                if (pair) {
+                                    pair->flags = (R8E_GC_KIND_ARRAY << R8E_GC_KIND_SHIFT);
+                                    pair->proto_id = 2; /* R8E_PROTO_ARRAY */
+                                    pair->length = 2;
+                                    pair->capacity = 2;
+                                    pair->elements = (R8EValue *)calloc(2, sizeof(R8EValue));
+                                    if (pair->elements) {
+                                        pair->elements[0] = me->key;
+                                        pair->elements[1] = me->value;
+                                    }
+                                    fo_val = r8e_interp_from_pointer(pair);
+                                }
+                                fo_done = false;
+                                fo_obj->props[1].val = me->order_next
+                                    ? r8e_interp_from_pointer(me->order_next)
+                                    : R8E_UNDEFINED;
+                            }
+                        }
+                    }
+                    /* Map keys iteration: produce keys only */
+                    else if (fo_tag == FO_TAG_MAP_KEYS) {
+                        R8EValue fo_cur = fo_obj->props[1].val;
+                        if (R8E_IS_POINTER(fo_cur)) {
+                            R8EMapEntryInterp *me = (R8EMapEntryInterp *)
+                                r8e_interp_get_pointer(fo_cur);
+                            if (me) {
+                                fo_val = me->key;
+                                fo_done = false;
+                                fo_obj->props[1].val = me->order_next
+                                    ? r8e_interp_from_pointer(me->order_next)
+                                    : R8E_UNDEFINED;
+                            }
+                        }
+                    }
+                    /* Map values iteration: produce values only */
+                    else if (fo_tag == FO_TAG_MAP_VALUES) {
+                        R8EValue fo_cur = fo_obj->props[1].val;
+                        if (R8E_IS_POINTER(fo_cur)) {
+                            R8EMapEntryInterp *me = (R8EMapEntryInterp *)
+                                r8e_interp_get_pointer(fo_cur);
+                            if (me) {
+                                fo_val = me->value;
+                                fo_done = false;
+                                fo_obj->props[1].val = me->order_next
+                                    ? r8e_interp_from_pointer(me->order_next)
+                                    : R8E_UNDEFINED;
+                            }
+                        }
+                    }
+                    /* Set iteration: produce values */
+                    else if (fo_tag == FO_TAG_SET || fo_tag == FO_TAG_SET_VALUES) {
+                        R8EValue fo_cur = fo_obj->props[1].val;
+                        if (R8E_IS_POINTER(fo_cur)) {
+                            R8ESetEntryInterp *se = (R8ESetEntryInterp *)
+                                r8e_interp_get_pointer(fo_cur);
+                            if (se) {
+                                fo_val = se->key;
+                                fo_done = false;
+                                fo_obj->props[1].val = se->order_next
+                                    ? r8e_interp_from_pointer(se->order_next)
+                                    : R8E_UNDEFINED;
+                            }
+                        }
+                    }
+                    /* Set entries iteration: produce [value, value] pairs */
+                    else if (fo_tag == FO_TAG_SET_ENTRIES) {
+                        R8EValue fo_cur = fo_obj->props[1].val;
+                        if (R8E_IS_POINTER(fo_cur)) {
+                            R8ESetEntryInterp *se = (R8ESetEntryInterp *)
+                                r8e_interp_get_pointer(fo_cur);
+                            if (se) {
+                                R8EArrayInterp *pair = (R8EArrayInterp *)
+                                    calloc(1, sizeof(R8EArrayInterp));
+                                if (pair) {
+                                    pair->flags = (R8E_GC_KIND_ARRAY << R8E_GC_KIND_SHIFT);
+                                    pair->proto_id = 2;
+                                    pair->length = 2;
+                                    pair->capacity = 2;
+                                    pair->elements = (R8EValue *)calloc(2, sizeof(R8EValue));
+                                    if (pair->elements) {
+                                        pair->elements[0] = se->key;
+                                        pair->elements[1] = se->key;
+                                    }
+                                    fo_val = r8e_interp_from_pointer(pair);
+                                }
+                                fo_done = false;
+                                fo_obj->props[1].val = se->order_next
+                                    ? r8e_interp_from_pointer(se->order_next)
+                                    : R8E_UNDEFINED;
+                            }
+                        }
+                    }
+                    /* Array/String iteration (original code) */
+                    else {
                     int32_t fo_idx = r8e_interp_get_int32(fo_obj->props[1].val);
 
                     if (R8E_IS_POINTER(fo_source)) {
@@ -3631,6 +3861,7 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
                                 r8e_interp_from_int32(fo_idx + 1);
                         }
                     }
+                    } /* end else (Array/String iteration) */
                 }
             }
 

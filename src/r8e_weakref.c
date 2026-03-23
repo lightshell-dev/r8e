@@ -203,10 +203,12 @@ typedef struct R8EString {
 #define R8E_ATOM_add              294
 #define R8E_ATOM_clear            295
 #define R8E_ATOM_delete_method    296
+#define R8E_ATOM_iterator         236
+#define R8E_ATOM_done             288
+#define R8E_ATOM_next             289
 #define R8E_ATOM_deref            311
 #define R8E_ATOM_register         312
 #define R8E_ATOM_unregister       313
-#define R8E_ATOM_next             289
 #define R8E_ATOM_done             288
 
 /* =========================================================================
@@ -2057,6 +2059,8 @@ void r8e_init_weakref_collections(R8EContext *ctx)
     install_method(ctx, map_proto, R8E_ATOM_values, builtin_map_values, 0);
     install_method(ctx, map_proto, R8E_ATOM_entries, builtin_map_entries, 0);
     install_method(ctx, map_proto, R8E_ATOM_size, builtin_map_size_getter, 0);
+    /* Map[Symbol.iterator] = Map.prototype.entries */
+    install_method(ctx, map_proto, R8E_ATOM_iterator, builtin_map_entries, 0);
 
     R8EObjTier0 *map_ctor = r8e_obj_new(ctx);
     install_value(ctx, map_ctor, R8E_ATOM_prototype,
@@ -2081,6 +2085,8 @@ void r8e_init_weakref_collections(R8EContext *ctx)
     install_method(ctx, set_proto, R8E_ATOM_values, builtin_set_values, 0);
     install_method(ctx, set_proto, R8E_ATOM_entries, builtin_set_entries, 0);
     install_method(ctx, set_proto, R8E_ATOM_size, builtin_set_size_getter, 0);
+    /* Set[Symbol.iterator] = Set.prototype.values */
+    install_method(ctx, set_proto, R8E_ATOM_iterator, builtin_set_values, 0);
 
     R8EObjTier0 *set_ctor = r8e_obj_new(ctx);
     install_value(ctx, set_ctor, R8E_ATOM_prototype,
