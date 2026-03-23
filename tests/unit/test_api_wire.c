@@ -710,6 +710,125 @@ TEST(api_eval_module_basic) {
 }
 
 /* =========================================================================
+ * DOM Bridge Tests
+ * ========================================================================= */
+
+/*
+ * dom_bridge_create_element: Call document.createElement('div'),
+ * verify it returns an object.
+ */
+TEST(dom_bridge_create_element) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EStatus st = r8e_ui_dom_bridge_init(ctx);
+    ASSERT_TRUE(st == R8E_OK);
+
+    /* Verify document global exists */
+    R8EValue doc = r8e_get_global(ctx, "document");
+    ASSERT_TRUE(R8E_IS_POINTER(doc));
+
+    /* Call document.createElement('div') through the C API */
+    R8EValue create_fn = r8e_get_prop(ctx, doc, "createElement");
+    ASSERT_TRUE(R8E_IS_POINTER(create_fn));
+
+    R8EValue tag_arg = r8e_make_cstring(ctx, "div");
+    R8EValue elem = r8e_call(ctx, create_fn, doc, 1, &tag_arg);
+    ASSERT_TRUE(R8E_IS_POINTER(elem));
+
+    /* Verify it has expected methods */
+    R8EValue append_fn = r8e_get_prop(ctx, elem, "appendChild");
+    ASSERT_TRUE(R8E_IS_POINTER(append_fn));
+
+    R8EValue set_attr_fn = r8e_get_prop(ctx, elem, "setAttribute");
+    ASSERT_TRUE(R8E_IS_POINTER(set_attr_fn));
+
+    /* Verify it has a style sub-object */
+    R8EValue style = r8e_get_prop(ctx, elem, "style");
+    ASSERT_TRUE(R8E_IS_POINTER(style));
+
+    r8e_context_free(ctx);
+}
+
+/*
+ * dom_bridge_text_content: Set textContent, read it back.
+ */
+TEST(dom_bridge_text_content) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EStatus st = r8e_ui_dom_bridge_init(ctx);
+    ASSERT_TRUE(st == R8E_OK);
+
+    /* Create an element */
+    R8EValue doc = r8e_get_global(ctx, "document");
+    R8EValue create_fn = r8e_get_prop(ctx, doc, "createElement");
+    R8EValue tag_arg = r8e_make_cstring(ctx, "p");
+    R8EValue elem = r8e_call(ctx, create_fn, doc, 1, &tag_arg);
+    ASSERT_TRUE(R8E_IS_POINTER(elem));
+
+    /* Set textContent */
+    R8EValue text_val = r8e_make_cstring(ctx, "Hello World");
+    r8e_set_prop(ctx, elem, "textContent", text_val);
+
+    /* Read textContent back */
+    R8EValue got = r8e_get_prop(ctx, elem, "textContent");
+
+    /* Extract string value */
+    char buf[64];
+    size_t len = 0;
+    const char *str = r8e_get_cstring(got, buf, &len);
+    ASSERT_TRUE(str != NULL);
+    ASSERT_TRUE(strcmp(str, "Hello World") == 0);
+
+    r8e_context_free(ctx);
+}
+
+/*
+ * dom_bridge_append_child: Create parent+child, appendChild, verify parentNode.
+ */
+TEST(dom_bridge_append_child) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    R8EStatus st = r8e_ui_dom_bridge_init(ctx);
+    ASSERT_TRUE(st == R8E_OK);
+
+    R8EValue doc = r8e_get_global(ctx, "document");
+    R8EValue create_fn = r8e_get_prop(ctx, doc, "createElement");
+
+    /* Create parent div */
+    R8EValue div_tag = r8e_make_cstring(ctx, "div");
+    R8EValue parent = r8e_call(ctx, create_fn, doc, 1, &div_tag);
+    ASSERT_TRUE(R8E_IS_POINTER(parent));
+
+    /* Create child span */
+    R8EValue span_tag = r8e_make_cstring(ctx, "span");
+    R8EValue child = r8e_call(ctx, create_fn, doc, 1, &span_tag);
+    ASSERT_TRUE(R8E_IS_POINTER(child));
+
+    /* appendChild */
+    R8EValue append_fn = r8e_get_prop(ctx, parent, "appendChild");
+    ASSERT_TRUE(R8E_IS_POINTER(append_fn));
+    R8EValue result = r8e_call(ctx, append_fn, parent, 1, &child);
+    /* appendChild should return the child */
+    ASSERT_TRUE(R8E_IS_POINTER(result));
+
+    /* Verify parentNode of child points to a valid node */
+    R8EValue parent_node = r8e_get_prop(ctx, child, "parentNode");
+    ASSERT_TRUE(R8E_IS_POINTER(parent_node));
+    /* parentNode should not be null */
+    ASSERT_TRUE(!R8E_IS_NULL(parent_node));
+
+    /* Verify firstChild of parent points to a valid node */
+    R8EValue first_child = r8e_get_prop(ctx, parent, "firstChild");
+    ASSERT_TRUE(R8E_IS_POINTER(first_child));
+    ASSERT_TRUE(!R8E_IS_NULL(first_child));
+
+    r8e_context_free(ctx);
+}
+
+/* =========================================================================
  * Suite entry point
  * ========================================================================= */
 
@@ -738,4 +857,7 @@ void run_api_wire_tests(void) {
     RUN_TEST(api_define_accessor_setter);
     RUN_TEST(api_set_module_loader_no_crash);
     RUN_TEST(api_eval_module_basic);
+    RUN_TEST(dom_bridge_create_element);
+    RUN_TEST(dom_bridge_text_content);
+    RUN_TEST(dom_bridge_append_child);
 }

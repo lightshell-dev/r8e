@@ -113,6 +113,26 @@ extern R8EValue r8e_compile_module(R8EContext *ctx, const char *source,
                                     size_t len, const char *filename);
 extern R8EValue r8e_exec_function(R8EContext *ctx, R8EValue func);
 
+/* --- External functions from r8e_weakref.c (Map/Set) --- */
+extern R8EValue r8e_map_new(R8EContext *ctx);
+extern R8EValue r8e_map_get(R8EContext *ctx, R8EValue map, R8EValue key);
+extern bool     r8e_map_set(R8EContext *ctx, R8EValue map,
+                              R8EValue key, R8EValue value);
+extern bool     r8e_map_has(R8EContext *ctx, R8EValue map, R8EValue key);
+extern bool     r8e_map_delete(R8EContext *ctx, R8EValue map, R8EValue key);
+extern void     r8e_map_clear(R8EContext *ctx, R8EValue map);
+extern uint32_t r8e_map_size(R8EContext *ctx, R8EValue map);
+extern R8EValue r8e_set_new(R8EContext *ctx);
+extern R8EValue r8e_set_add(R8EContext *ctx, R8EValue set, R8EValue value);
+extern bool     r8e_set_has(R8EContext *ctx, R8EValue set, R8EValue value);
+extern bool     r8e_set_delete(R8EContext *ctx, R8EValue set, R8EValue value);
+extern void     r8e_set_clear(R8EContext *ctx, R8EValue set);
+extern uint32_t r8e_set_size(R8EContext *ctx, R8EValue set);
+extern void     r8e_map_for_each(R8EContext *ctx, R8EValue map,
+                                  R8EValue callback, R8EValue this_arg);
+extern void     r8e_set_for_each(R8EContext *ctx, R8EValue set,
+                                  R8EValue callback, R8EValue this_arg);
+
 /* =========================================================================
  * Context lifecycle
  *
@@ -121,6 +141,19 @@ extern R8EValue r8e_exec_function(R8EContext *ctx, R8EValue func);
  * ========================================================================= */
 
 #define R8E_CTX_ALLOC_SIZE 4096
+
+/* Map/Set constructor callbacks for r8e_eval (ctx pointer is unused) */
+static R8EValue api_map_constructor(R8EContext *ctx, R8EValue this_val,
+                                     int argc, const R8EValue *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    return r8e_map_new(ctx);
+}
+
+static R8EValue api_set_constructor(R8EContext *ctx, R8EValue this_val,
+                                     int argc, const R8EValue *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    return r8e_set_new(ctx);
+}
 
 R8EContext *r8e_context_new(void) {
     R8EContext *ctx = (R8EContext *)calloc(1, R8E_CTX_ALLOC_SIZE);
