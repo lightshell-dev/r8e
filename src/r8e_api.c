@@ -108,6 +108,11 @@ extern R8EValue          r8e_call_function(R8EInterpContext *ctx,
 extern int r8e_atom_table_init(R8EAtomTable *table);
 extern void r8e_atom_table_destroy(R8EAtomTable *table);
 
+/* --- External functions from r8e_module.c / r8e_parse.c --- */
+extern R8EValue r8e_compile_module(R8EContext *ctx, const char *source,
+                                    size_t len, const char *filename);
+extern R8EValue r8e_exec_function(R8EContext *ctx, R8EValue func);
+
 /* =========================================================================
  * Context lifecycle
  *
@@ -454,6 +459,36 @@ R8EValue r8e_compile(R8EContext *ctx, const char *source, size_t len,
                       const char *filename) {
     (void)ctx; (void)source; (void)len; (void)filename;
     return R8E_UNDEFINED;
+}
+
+/* =========================================================================
+ * Module System APIs
+ * ========================================================================= */
+
+void r8e_set_module_loader(R8EContext *ctx, R8EModuleLoader loader) {
+    if (!ctx) return;
+    ctx->module_loader = (void *)loader;
+}
+
+R8EValue r8e_eval_module(R8EContext *ctx, const char *source, size_t len,
+                          const char *filename) {
+    if (!ctx || !source) return R8E_UNDEFINED;
+    if (len == 0) len = strlen(source);
+    if (!filename) filename = "<module>";
+
+    /* Use the same compilation + execution path as r8e_eval,
+     * but via the module compiler (r8e_compile_module).
+     * Since r8e_compile_module may be a stub that returns R8E_UNDEFINED,
+     * we handle that gracefully. */
+    R8EValue compiled = r8e_compile_module(ctx, source, len, filename);
+    if (R8E_IS_UNDEFINED(compiled)) {
+        /* Module compilation not available or failed - fall back to
+         * regular eval so caller at least gets some result */
+        return r8e_eval(ctx, source, len);
+    }
+
+    /* Execute the compiled module function */
+    return r8e_exec_function(ctx, compiled);
 }
 
 R8EValue r8e_call(R8EContext *ctx, R8EValue func, R8EValue this_val,

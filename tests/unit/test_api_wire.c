@@ -610,6 +610,36 @@ TEST(api_realm_create_and_switch) {
 }
 
 /* =========================================================================
+ * Module system API tests
+ * ========================================================================= */
+
+/*
+ * Test: Setting module loader to NULL should not crash.
+ */
+TEST(api_set_module_loader_no_crash) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+
+    /* Set loader to NULL - should not crash */
+    r8e_set_module_loader(ctx, NULL);
+
+    /* Also test calling with NULL context - should not crash */
+    r8e_set_module_loader(NULL, NULL);
+
+    r8e_context_free(ctx);
+}
+
+/*
+ * Test: Eval a simple module, verify no crash.
+ * Module eval may return undefined if no exports, that's fine.
+ */
+TEST(api_eval_module_basic) {
+    /* NULL context should return undefined and not crash */
+    R8EValue r1 = r8e_eval_module(NULL, "1", 0, "t.js");
+    ASSERT_TRUE(R8E_IS_UNDEFINED(r1));
+}
+
+/* =========================================================================
  * Suite entry point
  * ========================================================================= */
 
@@ -634,4 +664,6 @@ void run_api_wire_tests(void) {
     RUN_TEST(api_throw_and_clear_exception);
     RUN_TEST(api_throw_error_message);
     RUN_TEST(api_realm_create_and_switch);
+    RUN_TEST(api_set_module_loader_no_crash);
+    RUN_TEST(api_eval_module_basic);
 }

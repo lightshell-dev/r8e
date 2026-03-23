@@ -705,15 +705,9 @@ WEAK void r8e_gc_stats(const R8EContext *ctx, void *stats) {
 WEAK void r8e_value_retain(R8EValue v) { (void)v; }
 WEAK void r8e_value_release(R8EContext *ctx, R8EValue v) { (void)ctx; (void)v; }
 
-WEAK void r8e_set_module_loader(R8EContext *ctx, void *loader) {
-    (void)ctx; (void)loader;
-}
+/* r8e_set_module_loader stub removed - real implementation in r8e_api.c */
 
-WEAK R8EValue r8e_eval_module(R8EContext *ctx, const char *source, size_t len,
-                               const char *filename) {
-    (void)ctx; (void)source; (void)len; (void)filename;
-    return R8E_UNDEFINED;
-}
+/* r8e_eval_module stub removed - real implementation in r8e_api.c */
 
 WEAK void r8e_dump_bytecode(const R8EFunction *func) { (void)func; }
 WEAK void r8e_dump_value(R8EValue v) { (void)v; }

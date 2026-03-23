@@ -98,6 +98,44 @@ static inline int r8e_interp_inline_str_len(R8EValue v) {
 #define R8E_GC_KIND_CLOSURE  3u
 #define R8E_GC_KIND_ENVFRAME 4u
 #define R8E_GC_KIND_FUNCTION 5u
+#define R8E_GC_KIND_PROMISE  6u
+
+/* Minimal Promise struct for async function support.
+ * Layout must match r8e_promise.c R8EPromise. */
+#define R8E_PROMISE_PENDING   0
+#define R8E_PROMISE_FULFILLED 1
+#define R8E_PROMISE_REJECTED  2
+
+#define R8E_PROTO_PROMISE    20
+
+typedef struct R8EPromiseInterp {
+    uint32_t flags;
+    uint32_t proto_id;
+    uint8_t  state;       /* R8E_PROMISE_{PENDING,FULFILLED,REJECTED} */
+    uint8_t  pad_[7];
+    R8EValue result;
+    /* remaining fields (reactions etc.) not needed for resolved promises */
+    void    *reactions_head;
+    void    *reactions_tail;
+    uint32_t reaction_count;
+    uint8_t  is_handled;
+    uint8_t  is_resolving;
+    uint8_t  already_resolved;
+    uint8_t  pad2;
+} R8EPromiseInterp;
+
+/* Create a new fulfilled/rejected Promise wrapping a value. */
+static R8EValue r8e_interp_make_resolved_promise(R8EValue value, bool rejected)
+{
+    R8EPromiseInterp *p = (R8EPromiseInterp *)calloc(1, sizeof(R8EPromiseInterp));
+    if (!p) return R8E_UNDEFINED;
+    p->flags = (R8E_GC_KIND_PROMISE << R8E_GC_KIND_SHIFT)
+             | (1u << 16); /* initial refcount = 1 */
+    p->proto_id = R8E_PROTO_PROMISE;
+    p->state = rejected ? R8E_PROMISE_REJECTED : R8E_PROMISE_FULFILLED;
+    p->result = value;
+    return r8e_interp_from_pointer(p);
+}
 
 #define R8E_GC_GET_KIND(flags) \
     (((flags) & R8E_GC_KIND_MASK) >> R8E_GC_KIND_SHIFT)
@@ -1510,6 +1548,18 @@ static R8EValue r8e_interp_call_internal(R8EInterpContext *ctx,
 
     /* Free slot buffer */
     free(slot_buf);
+
+    /* Async function: wrap result in a resolved/rejected Promise */
+    if (func->is_async && !is_construct) {
+        if (ctx->has_exception) {
+            /* Wrap exception in a rejected promise instead of propagating */
+            R8EValue exc = ctx->exception;
+            ctx->has_exception = false;
+            ctx->exception = R8E_UNDEFINED;
+            return r8e_interp_make_resolved_promise(exc, true);
+        }
+        return r8e_interp_make_resolved_promise(result, false);
+    }
 
     return result;
 }
@@ -3087,14 +3137,30 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
         /*
          * Await: suspend async function until promise resolves.
          *
-         * Simplified implementation: if the value is already resolved
-         * (not a Promise), just pass it through. If it is a Promise
-         * object, we would need to schedule continuation on the
-         * microtask queue. For now, treat as passthrough.
+         * Phase B implementation: if the value is an already-resolved
+         * Promise, extract its result. If it's a non-promise value,
+         * pass through. Pending promises would require coroutine
+         * suspension (Phase C, not yet implemented).
          */
         a = POP(); /* value or promise */
-        /* If the value is a thenable (has .then method), we should
-         * schedule resumption. For now, pass through directly. */
+        if (R8E_IS_POINTER(a)) {
+            R8EGCHeader *ah = (R8EGCHeader *)r8e_interp_get_pointer(a);
+            if (ah && R8E_GC_GET_KIND(ah->flags) == R8E_GC_KIND_PROMISE) {
+                R8EPromiseInterp *pr = (R8EPromiseInterp *)ah;
+                if (pr->state == R8E_PROMISE_FULFILLED) {
+                    PUSH(pr->result);
+                } else if (pr->state == R8E_PROMISE_REJECTED) {
+                    /* Re-throw the rejection reason */
+                    r8e_interp_throw(ctx, pr->result);
+                    goto exception;
+                } else {
+                    /* Pending promise: cannot suspend, pass through */
+                    PUSH(a);
+                }
+                DISPATCH();
+            }
+        }
+        /* Non-promise value: pass through (await 42 === 42) */
         PUSH(a);
         DISPATCH();
     }

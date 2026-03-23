@@ -919,6 +919,9 @@ struct R8EContext {
 
     /* Flags */
     uint32_t    flags;
+
+    /* Module loader callback (cast to R8EModuleLoader when used) */
+    void       *module_loader;
 };
 
 /* Context flags */
