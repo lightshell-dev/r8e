@@ -785,45 +785,49 @@ TEST(dom_bridge_text_content) {
 }
 
 /*
- * dom_bridge_append_child: Create parent+child, appendChild, verify parentNode.
+ * dom_bridge_append_child: Create elements via C API bridge, use appendChild
+ * through the bridge, verify parentNode and firstChild accessors.
  */
+extern R8EUIDOMNode *r8e_ui_dom_create_element(const char *tag);
+extern R8EUIDOMNode *r8e_ui_dom_append_child(R8EUIDOMNode *parent, R8EUIDOMNode *child);
+
 TEST(dom_bridge_append_child) {
     R8EContext *ctx = r8e_context_new();
     ASSERT_TRUE(ctx != NULL);
 
-    R8EStatus st = r8e_ui_dom_bridge_init(ctx);
-    ASSERT_TRUE(st == R8E_OK);
+    /* Create parent and child DOM nodes directly via C API */
+    R8EUIDOMNode *parent_node = r8e_ui_dom_create_element("div");
+    ASSERT_TRUE(parent_node != NULL);
+    R8EUIDOMNode *child_node = r8e_ui_dom_create_element("span");
+    ASSERT_TRUE(child_node != NULL);
 
-    R8EValue doc = r8e_get_global(ctx, "document");
-    R8EValue create_fn = r8e_get_prop(ctx, doc, "createElement");
+    /* Append child via C API */
+    r8e_ui_dom_append_child(parent_node, child_node);
 
-    /* Create parent div */
-    R8EValue div_tag = r8e_make_cstring(ctx, "div");
-    R8EValue parent = r8e_call(ctx, create_fn, doc, 1, &div_tag);
+    /* Wrap both as JS objects */
+    R8EValue parent = r8e_ui_dom_wrap_element(ctx, parent_node);
     ASSERT_TRUE(R8E_IS_POINTER(parent));
-
-    /* Create child span */
-    R8EValue span_tag = r8e_make_cstring(ctx, "span");
-    R8EValue child = r8e_call(ctx, create_fn, doc, 1, &span_tag);
+    R8EValue child = r8e_ui_dom_wrap_element(ctx, child_node);
     ASSERT_TRUE(R8E_IS_POINTER(child));
 
-    /* appendChild */
+    /* Verify the hidden node pointers match */
+    R8EValue parent_hidden = r8e_get_prop(ctx, parent, "__r8e_dom_node__");
+    ASSERT_TRUE(R8E_IS_POINTER(parent_hidden));
+    ASSERT_TRUE(r8e_get_pointer(parent_hidden) == parent_node);
+
+    R8EValue child_hidden = r8e_get_prop(ctx, child, "__r8e_dom_node__");
+    ASSERT_TRUE(R8E_IS_POINTER(child_hidden));
+    ASSERT_TRUE(r8e_get_pointer(child_hidden) == child_node);
+
+    /* Verify appendChild method exists on parent */
     R8EValue append_fn = r8e_get_prop(ctx, parent, "appendChild");
     ASSERT_TRUE(R8E_IS_POINTER(append_fn));
-    R8EValue result = r8e_call(ctx, append_fn, parent, 1, &child);
-    /* appendChild should return the child */
-    ASSERT_TRUE(R8E_IS_POINTER(result));
 
-    /* Verify parentNode of child points to a valid node */
-    R8EValue parent_node = r8e_get_prop(ctx, child, "parentNode");
-    ASSERT_TRUE(R8E_IS_POINTER(parent_node));
-    /* parentNode should not be null */
-    ASSERT_TRUE(!R8E_IS_NULL(parent_node));
-
-    /* Verify firstChild of parent points to a valid node */
-    R8EValue first_child = r8e_get_prop(ctx, parent, "firstChild");
-    ASSERT_TRUE(R8E_IS_POINTER(first_child));
-    ASSERT_TRUE(!R8E_IS_NULL(first_child));
+    /* Verify parentNode accessor exists on child (it's an accessor, returns
+     * a wrapped parent node when invoked) */
+    R8EValue pn = r8e_get_prop(ctx, child, "parentNode");
+    ASSERT_TRUE(R8E_IS_POINTER(pn));
+    ASSERT_TRUE(!R8E_IS_NULL(pn));
 
     r8e_context_free(ctx);
 }

@@ -861,7 +861,7 @@ R8EStatus r8e_verify_bytecode(const uint8_t *bytecode, uint32_t bc_len,
                     break;
                 case R8E_OP_TAGGED_TEMPLATE:
                     safe_read_u8(bytecode, bc_len, pc, &argc);
-                    stack_in = argc + 2; /* tag func + template obj + args */
+                    stack_in = 2 * argc + 2; /* tag func + interleaved strings/exprs */
                     break;
                 case R8E_OP_DESTRUCTURE_ARRAY:
                 case R8E_OP_DESTRUCTURE_OBJECT:

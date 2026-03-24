@@ -122,8 +122,9 @@ TEST(raf_callback_fires) {
     r8e_raf_reset();
     r8e_raf_init(ctx);
 
-    /* Set up a global counter and a callback that increments it */
-    r8e_eval(ctx, "var rafCount = 0", 0);
+    /* Set up a global counter via C API (ensures it's on the global object)
+     * and a callback that increments it */
+    r8e_set_global(ctx, "rafCount", r8e_make_number(0.0));
     R8EValue cb = r8e_eval(ctx, "(function() { rafCount = rafCount + 1 })", 0);
     ASSERT_TRUE(r8e_is_function(cb));
 
@@ -131,7 +132,7 @@ TEST(raf_callback_fires) {
     r8e_raf_tick(ctx);
 
     /* Check that rafCount is now 1 */
-    R8EValue count = r8e_eval(ctx, "rafCount", 0);
+    R8EValue count = r8e_get_global(ctx, "rafCount");
     double d = r8e_to_double(count);
     ASSERT_EQ_INT((int)d, 1);
 
@@ -148,7 +149,7 @@ TEST(raf_cancel_prevents_fire) {
     r8e_raf_reset();
     r8e_raf_init(ctx);
 
-    r8e_eval(ctx, "var rafCancelCount = 0", 0);
+    r8e_set_global(ctx, "rafCancelCount", r8e_make_number(0.0));
     R8EValue cb = r8e_eval(ctx, "(function() { rafCancelCount = rafCancelCount + 1 })", 0);
     ASSERT_TRUE(r8e_is_function(cb));
 
@@ -157,7 +158,7 @@ TEST(raf_cancel_prevents_fire) {
     r8e_raf_tick(ctx);
 
     /* Should NOT have been called */
-    R8EValue count = r8e_eval(ctx, "rafCancelCount", 0);
+    R8EValue count = r8e_get_global(ctx, "rafCancelCount");
     double d = r8e_to_double(count);
     ASSERT_EQ_INT((int)d, 0);
 
@@ -174,7 +175,7 @@ TEST(raf_fires_once) {
     r8e_raf_reset();
     r8e_raf_init(ctx);
 
-    r8e_eval(ctx, "var rafOnceCount = 0", 0);
+    r8e_set_global(ctx, "rafOnceCount", r8e_make_number(0.0));
     R8EValue cb = r8e_eval(ctx, "(function() { rafOnceCount = rafOnceCount + 1 })", 0);
     ASSERT_TRUE(r8e_is_function(cb));
 
@@ -182,12 +183,12 @@ TEST(raf_fires_once) {
 
     /* First tick fires callback */
     r8e_raf_tick(ctx);
-    R8EValue count1 = r8e_eval(ctx, "rafOnceCount", 0);
+    R8EValue count1 = r8e_get_global(ctx, "rafOnceCount");
     ASSERT_EQ_INT((int)r8e_to_double(count1), 1);
 
     /* Second tick should NOT fire it again */
     r8e_raf_tick(ctx);
-    R8EValue count2 = r8e_eval(ctx, "rafOnceCount", 0);
+    R8EValue count2 = r8e_get_global(ctx, "rafOnceCount");
     ASSERT_EQ_INT((int)r8e_to_double(count2), 1);
 
     r8e_context_free(ctx);

@@ -174,6 +174,10 @@ R8EContext *r8e_context_new(void) {
     /* Create a persistent global object for cross-eval global access */
     ctx->global_obj = r8e_make_object(ctx);
 
+    /* Register Map and Set constructors on the global object */
+    r8e_set_global_func(ctx, "Map", api_map_constructor, 0);
+    r8e_set_global_func(ctx, "Set", api_set_constructor, 0);
+
     return ctx;
 }
 
@@ -539,6 +543,11 @@ R8EValue r8e_call(R8EContext *ctx, R8EValue func, R8EValue this_val,
     if (!interp) {
         ctx->error.has_exception = true;
         return R8E_UNDEFINED;
+    }
+
+    /* Inject the persistent global object so the callback can access globals */
+    if (R8E_IS_POINTER(ctx->global_obj)) {
+        r8e_interp_set_global(interp, ctx->global_obj);
     }
 
     /* Invoke the function through the interpreter's call mechanism */
@@ -920,7 +929,30 @@ R8EStatus r8e_set_prop_atom(R8EContext *ctx, R8EValue obj, uint32_t atom,
             t1->count++;
             return R8E_OK;
         }
-        return R8E_ERROR; /* tier 1 full */
+        /* Tier 1 full - promote to tier 2 in-place.
+         * ApiObjTier2 is: flags(4) + proto_id(4) + count(1) + capacity(1) + pad(6) + props_ptr(8) = 24 bytes
+         * ApiObjTier1 is: flags(4) + proto_id(4) + count(1) + pad(7) + props[4](64) = 80 bytes
+         * Since tier1 is larger, we can reinterpret in-place */
+        {
+            uint8_t old_count = t1->count;  /* 4 */
+            uint8_t new_cap = 16;
+            ApiPropPair *new_props = (ApiPropPair *)calloc(new_cap, sizeof(ApiPropPair));
+            if (!new_props) return R8E_ERROR;
+            /* Copy existing props */
+            for (uint8_t i = 0; i < old_count; i++) {
+                new_props[i] = t1->props[i];
+            }
+            /* Add the new prop */
+            new_props[old_count].key = key;
+            new_props[old_count].val = val;
+            /* Reinterpret as tier 2 */
+            ApiObjTier2 *t2 = (ApiObjTier2 *)ptr;
+            t2->flags = (API_OBJ_GC_KIND_OBJECT << API_OBJ_GC_KIND_SHIFT) | 2u;
+            t2->count = old_count + 1;
+            t2->capacity = new_cap;
+            t2->props = new_props;
+            return R8E_OK;
+        }
     } else if (tier == 2) {
         ApiObjTier2 *t2 = (ApiObjTier2 *)ptr;
         if (t2->props) {
@@ -937,6 +969,18 @@ R8EStatus r8e_set_prop_atom(R8EContext *ctx, R8EValue obj, uint32_t atom,
                 t2->count++;
                 return R8E_OK;
             }
+            /* Grow the props array */
+            uint8_t new_cap = t2->capacity * 2;
+            if (new_cap < t2->capacity) new_cap = 255;
+            ApiPropPair *new_props = (ApiPropPair *)realloc(
+                t2->props, new_cap * sizeof(ApiPropPair));
+            if (!new_props) return R8E_ERROR_OOM;
+            t2->props = new_props;
+            t2->capacity = new_cap;
+            t2->props[t2->count].key = key;
+            t2->props[t2->count].val = val;
+            t2->count++;
+            return R8E_OK;
         }
         return R8E_ERROR;
     }

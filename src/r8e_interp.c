@@ -295,6 +295,37 @@ typedef struct {
     void     *named;
 } R8EArrayInterp;
 
+/* =========================================================================
+ * Map/Set atom IDs (resolved at first use from the global atom table)
+ * ========================================================================= */
+
+extern uint32_t r8e_atom_intern(void *ctx, const char *str, uint32_t len);
+
+static uint32_t ATOM_set_id     = 0;
+static uint32_t ATOM_get_id     = 0;
+static uint32_t ATOM_has_id     = 0;
+static uint32_t ATOM_add_id     = 0;
+static uint32_t ATOM_delete_id  = 0;
+static uint32_t ATOM_clear_id   = 0;
+static uint32_t ATOM_size_id    = 0;
+static uint32_t ATOM_keys_id    = 0;
+static uint32_t ATOM_values_id  = 0;
+static uint32_t ATOM_entries_id = 0;
+
+static void ensure_map_set_atoms(void) {
+    if (ATOM_set_id != 0) return;
+    ATOM_set_id     = r8e_atom_intern(NULL, "set",     3);
+    ATOM_get_id     = r8e_atom_intern(NULL, "get",     3);
+    ATOM_has_id     = r8e_atom_intern(NULL, "has",     3);
+    ATOM_add_id     = r8e_atom_intern(NULL, "add",     3);
+    ATOM_delete_id  = r8e_atom_intern(NULL, "delete",  6);
+    ATOM_clear_id   = r8e_atom_intern(NULL, "clear",   5);
+    ATOM_size_id    = r8e_atom_intern(NULL, "size",    4);
+    ATOM_keys_id    = r8e_atom_intern(NULL, "keys",    4);
+    ATOM_values_id  = r8e_atom_intern(NULL, "values",  6);
+    ATOM_entries_id = r8e_atom_intern(NULL, "entries",  7);
+}
+
 /* Map/Set entry structures (must match r8e_weakref.c layout) */
 #define R8E_GC_KIND_MAP_INTERP  0x0Cu
 #define R8E_GC_KIND_SET_INTERP  0x0Du
@@ -584,6 +615,25 @@ extern bool     r8e_obj_delete_elem(void *obj, R8EValue key);
 /* Object creation (from r8e_object.c) */
 extern void *r8e_obj_new(void *ctx);
 extern void *r8e_array_new(void *ctx, uint32_t capacity);
+
+/* Map/Set operations (from r8e_weakref.c)
+ * Note: ctx is R8EContext* in weakref.c but we pass R8EInterpContext*.
+ * The map/set functions only use ctx for error reporting via throw_type_error.
+ * On the happy path (valid Map/Set), ctx is not dereferenced. */
+extern R8EValue r8e_map_new(void *ctx);
+extern R8EValue r8e_map_get(void *ctx, R8EValue map, R8EValue key);
+extern R8EValue r8e_map_set(void *ctx, R8EValue map,
+                              R8EValue key, R8EValue value);
+extern bool     r8e_map_has(void *ctx, R8EValue map, R8EValue key);
+extern bool     r8e_map_delete(void *ctx, R8EValue map, R8EValue key);
+extern void     r8e_map_clear(void *ctx, R8EValue map);
+extern uint32_t r8e_map_size(void *ctx, R8EValue map);
+extern R8EValue r8e_set_new(void *ctx);
+extern R8EValue r8e_set_add(void *ctx, R8EValue set, R8EValue value);
+extern bool     r8e_set_has(void *ctx, R8EValue set, R8EValue value);
+extern bool     r8e_set_delete(void *ctx, R8EValue set, R8EValue value);
+extern void     r8e_set_clear(void *ctx, R8EValue set);
+extern uint32_t r8e_set_size(void *ctx, R8EValue set);
 
 /* Closure access (from r8e_closure.c) */
 extern R8EValue r8e_closure_get_capture(const void *closure, uint8_t index);
@@ -929,6 +979,21 @@ static R8EValue r8e_interp_get_prop(R8EInterpContext *ctx, R8EValue obj,
     R8EGCHeader *h = (R8EGCHeader *)ptr;
     uint32_t kind = R8E_GC_GET_KIND(h->flags);
 
+    /* Map.size / Set.size (bottom-nibble GC kinds) */
+    {
+        uint32_t kind_lo = h->flags & 0x0Fu;
+        if (kind_lo == R8E_GC_KIND_MAP_INTERP || kind_lo == R8E_GC_KIND_SET_INTERP) {
+            ensure_map_set_atoms();
+            if (atom == ATOM_size_id) {
+                if (kind_lo == R8E_GC_KIND_MAP_INTERP)
+                    return r8e_interp_from_int32((int32_t)r8e_map_size(ctx, obj));
+                else
+                    return r8e_interp_from_int32((int32_t)r8e_set_size(ctx, obj));
+            }
+            /* Fall through to standard property lookup (will return UNDEFINED) */
+        }
+    }
+
     /* Array length */
     if (kind == R8E_GC_KIND_ARRAY && atom == 1 /* R8E_ATOM_length */) {
         R8EArrayInterp *arr = (R8EArrayInterp *)ptr;
@@ -1015,6 +1080,53 @@ static bool r8e_interp_set_prop(R8EInterpContext *ctx, R8EValue obj,
                 t1->props[t1->count].key = key;
                 t1->props[t1->count].val = val;
                 t1->count++;
+                return true;
+            }
+            /* Tier 1 full - promote to tier 2 in-place */
+            {
+                uint8_t old_count = t1->count;
+                uint8_t new_cap = 16;
+                R8EPropPairInterp *new_props = (R8EPropPairInterp *)calloc(
+                    new_cap, sizeof(R8EPropPairInterp));
+                if (!new_props) return false;
+                for (uint8_t i = 0; i < old_count; i++) {
+                    new_props[i] = t1->props[i];
+                }
+                new_props[old_count].key = key;
+                new_props[old_count].val = val;
+                R8EObjTier2Interp *t2 = (R8EObjTier2Interp *)ptr;
+                t2->flags = (R8E_GC_KIND_OBJECT << R8E_GC_KIND_SHIFT) | 2u;
+                t2->count = old_count + 1;
+                t2->capacity = new_cap;
+                t2->props = new_props;
+                return true;
+            }
+        } else if (tier == 2) {
+            R8EObjTier2Interp *t2 = (R8EObjTier2Interp *)ptr;
+            if (t2->props) {
+                for (uint8_t i = 0; i < t2->count; i++) {
+                    if (t2->props[i].key == key) {
+                        t2->props[i].val = val;
+                        return true;
+                    }
+                }
+                if (t2->count < t2->capacity) {
+                    t2->props[t2->count].key = key;
+                    t2->props[t2->count].val = val;
+                    t2->count++;
+                    return true;
+                }
+                /* Grow the array */
+                uint8_t new_cap = t2->capacity * 2;
+                if (new_cap < t2->capacity) new_cap = 255; /* overflow */
+                R8EPropPairInterp *new_props = (R8EPropPairInterp *)realloc(
+                    t2->props, new_cap * sizeof(R8EPropPairInterp));
+                if (!new_props) return false;
+                t2->props = new_props;
+                t2->capacity = new_cap;
+                t2->props[t2->count].key = key;
+                t2->props[t2->count].val = val;
+                t2->count++;
                 return true;
             }
         }
@@ -1392,7 +1504,7 @@ static bool r8e_interp_builtin_method(R8EInterpContext *ctx,
         void *ptr = r8e_interp_get_pointer(this_val);
         if (!ptr) return false;
         R8EGCHeader *h = (R8EGCHeader *)ptr;
-        if (R8E_GC_GET_KIND(h->flags) != R8E_GC_KIND_ARRAY) return false;
+        if (R8E_GC_GET_KIND(h->flags) == R8E_GC_KIND_ARRAY) {
         R8EArrayInterp *arr = (R8EArrayInterp *)ptr;
 
         if (method_atom == 114 /* R8E_ATOM_push */) {
@@ -1508,7 +1620,166 @@ static bool r8e_interp_builtin_method(R8EInterpContext *ctx,
             return true;
         }
 
-        return false;
+        return false; /* not a known array method */
+        } /* end if (kind == ARRAY) */
+
+    /* --- Map methods (GC kind 0x0C in bottom nibble) --- */
+        {
+            uint32_t kind_lo = h->flags & 0x0Fu;
+            if (kind_lo == R8E_GC_KIND_MAP_INTERP ||
+                kind_lo == R8E_GC_KIND_SET_INTERP) {
+                ensure_map_set_atoms();
+            }
+
+            if (kind_lo == R8E_GC_KIND_MAP_INTERP) {
+                /* Map.prototype.set(key, value) */
+                if (method_atom == ATOM_set_id) {
+                    R8EValue key = argc > 0 ? argv[0] : R8E_UNDEFINED;
+                    R8EValue val = argc > 1 ? argv[1] : R8E_UNDEFINED;
+                    r8e_map_set(ctx, this_val, key, val);
+                    *out_result = this_val; /* Map.set returns the Map */
+                    return true;
+                }
+                /* Map.prototype.get(key) */
+                if (method_atom == ATOM_get_id) {
+                    R8EValue key = argc > 0 ? argv[0] : R8E_UNDEFINED;
+                    *out_result = r8e_map_get(ctx, this_val, key);
+                    return true;
+                }
+                /* Map.prototype.has(key) */
+                if (method_atom == ATOM_has_id) {
+                    R8EValue key = argc > 0 ? argv[0] : R8E_UNDEFINED;
+                    *out_result = r8e_map_has(ctx, this_val, key)
+                                 ? R8E_TRUE : R8E_FALSE;
+                    return true;
+                }
+                /* Map.prototype.delete(key) */
+                if (method_atom == ATOM_delete_id ||
+                    0 /* secondary delete check removed */) {
+                    R8EValue key = argc > 0 ? argv[0] : R8E_UNDEFINED;
+                    *out_result = r8e_map_delete(ctx, this_val, key)
+                                 ? R8E_TRUE : R8E_FALSE;
+                    return true;
+                }
+                /* Map.prototype.clear() */
+                if (method_atom == ATOM_clear_id) {
+                    r8e_map_clear(ctx, this_val);
+                    *out_result = R8E_UNDEFINED;
+                    return true;
+                }
+                /* Map.prototype.size (called as method due to encoding) */
+                if (method_atom == ATOM_size_id) {
+                    *out_result = r8e_interp_from_int32(
+                        (int32_t)r8e_map_size(ctx, this_val));
+                    return true;
+                }
+                /* Map.prototype.keys() */
+                if (method_atom == ATOM_keys_id) {
+                    R8EMapInterp *m = (R8EMapInterp *)ptr;
+                    R8EMapIteratorInterp *it = (R8EMapIteratorInterp *)calloc(
+                        1, sizeof(R8EMapIteratorInterp));
+                    if (!it) { *out_result = R8E_UNDEFINED; return true; }
+                    it->flags = R8E_GC_KIND_MAP_ITER_INTERP;
+                    it->map = m;
+                    it->current = m->order_first;
+                    it->mode = 0; /* keys */
+                    *out_result = r8e_interp_from_pointer(it);
+                    return true;
+                }
+                /* Map.prototype.values() */
+                if (method_atom == ATOM_values_id) {
+                    R8EMapInterp *m = (R8EMapInterp *)ptr;
+                    R8EMapIteratorInterp *it = (R8EMapIteratorInterp *)calloc(
+                        1, sizeof(R8EMapIteratorInterp));
+                    if (!it) { *out_result = R8E_UNDEFINED; return true; }
+                    it->flags = R8E_GC_KIND_MAP_ITER_INTERP;
+                    it->map = m;
+                    it->current = m->order_first;
+                    it->mode = 1; /* values */
+                    *out_result = r8e_interp_from_pointer(it);
+                    return true;
+                }
+                /* Map.prototype.entries() */
+                if (method_atom == ATOM_entries_id) {
+                    R8EMapInterp *m = (R8EMapInterp *)ptr;
+                    R8EMapIteratorInterp *it = (R8EMapIteratorInterp *)calloc(
+                        1, sizeof(R8EMapIteratorInterp));
+                    if (!it) { *out_result = R8E_UNDEFINED; return true; }
+                    it->flags = R8E_GC_KIND_MAP_ITER_INTERP;
+                    it->map = m;
+                    it->current = m->order_first;
+                    it->mode = 2; /* entries */
+                    *out_result = r8e_interp_from_pointer(it);
+                    return true;
+                }
+                return false;
+            }
+
+            if (kind_lo == R8E_GC_KIND_SET_INTERP) {
+                /* Set.prototype.add(value) */
+                if (method_atom == ATOM_add_id) {
+                    R8EValue val = argc > 0 ? argv[0] : R8E_UNDEFINED;
+                    r8e_set_add(ctx, this_val, val);
+                    *out_result = this_val; /* Set.add returns the Set */
+                    return true;
+                }
+                /* Set.prototype.has(value) */
+                if (method_atom == ATOM_has_id) {
+                    R8EValue val = argc > 0 ? argv[0] : R8E_UNDEFINED;
+                    *out_result = r8e_set_has(ctx, this_val, val)
+                                 ? R8E_TRUE : R8E_FALSE;
+                    return true;
+                }
+                /* Set.prototype.delete(value) */
+                if (method_atom == ATOM_delete_id ||
+                    0 /* secondary delete check removed */) {
+                    R8EValue val = argc > 0 ? argv[0] : R8E_UNDEFINED;
+                    *out_result = r8e_set_delete(ctx, this_val, val)
+                                 ? R8E_TRUE : R8E_FALSE;
+                    return true;
+                }
+                /* Set.prototype.clear() */
+                if (method_atom == ATOM_clear_id) {
+                    r8e_set_clear(ctx, this_val);
+                    *out_result = R8E_UNDEFINED;
+                    return true;
+                }
+                /* Set.prototype.size */
+                if (method_atom == ATOM_size_id) {
+                    *out_result = r8e_interp_from_int32(
+                        (int32_t)r8e_set_size(ctx, this_val));
+                    return true;
+                }
+                /* Set.prototype.values() / Set.prototype.keys() (same for Set) */
+                if (method_atom == ATOM_values_id ||
+                    method_atom == ATOM_keys_id) {
+                    R8ESetInterp *s = (R8ESetInterp *)ptr;
+                    R8ESetIteratorInterp *it = (R8ESetIteratorInterp *)calloc(
+                        1, sizeof(R8ESetIteratorInterp));
+                    if (!it) { *out_result = R8E_UNDEFINED; return true; }
+                    it->flags = R8E_GC_KIND_SET_ITER_INTERP;
+                    it->set = s;
+                    it->current = s->order_first;
+                    it->mode = 0; /* values */
+                    *out_result = r8e_interp_from_pointer(it);
+                    return true;
+                }
+                /* Set.prototype.entries() */
+                if (method_atom == ATOM_entries_id) {
+                    R8ESetInterp *s = (R8ESetInterp *)ptr;
+                    R8ESetIteratorInterp *it = (R8ESetIteratorInterp *)calloc(
+                        1, sizeof(R8ESetIteratorInterp));
+                    if (!it) { *out_result = R8E_UNDEFINED; return true; }
+                    it->flags = R8E_GC_KIND_SET_ITER_INTERP;
+                    it->set = s;
+                    it->current = s->order_first;
+                    it->mode = 1; /* entries */
+                    *out_result = r8e_interp_from_pointer(it);
+                    return true;
+                }
+                return false;
+            }
+        }
     }
 
     return false;
@@ -3954,9 +4225,23 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
                 DISPATCH();
             }
 
-            /* Extract strings (at even positions: 0, 2, 4, ...) */
+            /* Extract strings (at even positions: 0, 2, 4, ...)
+             * Convert atom values to proper interp string values so they
+             * behave correctly as JS strings (typeof, ===, etc). */
             for (int ti = 0; ti < tt_str_count; ti++) {
-                tt_arr->elements[ti] = tt_base[ti * 2];
+                R8EValue sv = tt_base[ti * 2];
+                if (R8E_IS_ATOM(sv)) {
+                    extern const char *r8e_atom_get(void *, uint32_t);
+                    uint32_t aid = (uint32_t)(sv & 0xFFFFFFFFULL);
+                    const char *astr = r8e_atom_get(NULL, aid);
+                    if (astr) {
+                        sv = r8e_interp_make_string(astr,
+                                                     (uint32_t)strlen(astr));
+                    } else {
+                        sv = r8e_interp_make_string("", 0);
+                    }
+                }
+                tt_arr->elements[ti] = sv;
             }
             R8EValue tt_strings_val = r8e_interp_from_pointer(tt_arr);
 

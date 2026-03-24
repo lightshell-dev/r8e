@@ -848,6 +848,25 @@ TEST(eval_template_literal_expr) {
     r8e_context_free(ctx);
 }
 
+/* --- Tagged template literals --- */
+
+TEST(tagged_template_basic) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+    /* tag`hello` should call tag with strings array ["hello"] */
+    ASSERT_TRUE(eval_bool(ctx,
+        "function tag(s) { return s[0] === 'hello' } tag`hello`"));
+    r8e_context_free(ctx);
+}
+
+TEST(tagged_template_with_expr) {
+    R8EContext *ctx = r8e_context_new();
+    ASSERT_TRUE(ctx != NULL);
+    ASSERT_EQ_INT(eval_int(ctx,
+        "function tag(s,v) { return v } var x=42; tag`${x}`"), 42);
+    r8e_context_free(ctx);
+}
+
 /* =========================================================================
  * Test 19: Generators
  * ========================================================================= */
@@ -1094,6 +1113,10 @@ void run_integration_tests(void) {
     /* Template literals */
     RUN_TEST(eval_template_literal);
     RUN_TEST(eval_template_literal_expr);
+
+    /* Tagged template literals */
+    RUN_TEST(tagged_template_basic);
+    RUN_TEST(tagged_template_with_expr);
 
     /* Generators */
     RUN_TEST(eval_generator_basic);
