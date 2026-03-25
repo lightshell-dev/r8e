@@ -165,9 +165,46 @@ R8EFont *r8e_font_load(const uint8_t *data, uint32_t length) {
         expected_loca = ((uint32_t)font->num_glyphs + 1) * 4;
     if (font->loca_len < expected_loca) goto fail;
 
-    /* Find cmap subtable (prefer format 4 for BMP, or format 12 for full Unicode) */
-    /* ... (implemented in Task 2) ... */
-    font->cmap_format = 0;  /* placeholder */
+    /* Find cmap subtable (prefer format 4 for BMP) */
+    {
+        uint16_t cmap_num_sub;
+        if (!safe_read_u16(&r, font->cmap_off + 2, &cmap_num_sub)) goto fail;
+        if (cmap_num_sub > 100) goto fail;
+
+        uint32_t best_off = 0;
+        int best_score = -1;
+        for (uint16_t ci = 0; ci < cmap_num_sub; ci++) {
+            uint32_t rec_off = font->cmap_off + 4 + (uint32_t)ci * 8;
+            uint16_t platID, encID;
+            uint32_t sub_offset;
+            if (!safe_read_u16(&r, rec_off, &platID)) goto fail;
+            if (!safe_read_u16(&r, rec_off + 2, &encID)) goto fail;
+            if (!safe_read_u32(&r, rec_off + 4, &sub_offset)) goto fail;
+
+            /* Score: prefer platformID=3,encodingID=1 (Windows Unicode BMP) */
+            int score = -1;
+            if (platID == 3 && encID == 1) score = 10;
+            else if (platID == 0) score = 5;
+
+            if (score > best_score) {
+                uint32_t abs_off = font->cmap_off + sub_offset;
+                uint16_t fmt;
+                if (abs_off + 2 > length) continue;
+                if (!safe_read_u16(&r, abs_off, &fmt)) continue;
+                if (fmt == 4) {
+                    best_off = abs_off;
+                    best_score = score;
+                }
+            }
+        }
+
+        if (best_off != 0) {
+            font->cmap_sub_off = best_off;
+            font->cmap_format = 4;
+        } else {
+            font->cmap_format = 0;
+        }
+    }
 
     return font;
 
@@ -190,19 +227,144 @@ float r8e_font_scale(R8EFont *font, float pixel_height) {
 }
 
 void r8e_font_vmetrics(R8EFont *f, int *a, int *d, int *lg) {
-    (void)f; *a = 0; *d = 0; *lg = 0;
+    if (!f) { *a = 0; *d = 0; *lg = 0; return; }
+    const R8EFontReader *r = &f->reader;
+    int16_t ascent, descent, line_gap;
+    if (!safe_read_i16(r, f->hhea_off + 4, &ascent)) { *a = 0; *d = 0; *lg = 0; return; }
+    if (!safe_read_i16(r, f->hhea_off + 6, &descent)) { *a = 0; *d = 0; *lg = 0; return; }
+    if (!safe_read_i16(r, f->hhea_off + 8, &line_gap)) { *a = 0; *d = 0; *lg = 0; return; }
+    *a = ascent;
+    *d = descent;
+    *lg = line_gap;
 }
 
 void r8e_font_hmetrics(R8EFont *f, uint32_t g, int *adv, int *lsb) {
-    (void)f; (void)g; *adv = 0; *lsb = 0;
+    if (!f) { *adv = 0; *lsb = 0; return; }
+    const R8EFontReader *r = &f->reader;
+    uint16_t advance;
+    int16_t lsb_val;
+
+    if (g < f->num_hmetrics) {
+        uint32_t off = f->hmtx_off + g * 4;
+        if (!safe_read_u16(r, off, &advance)) { *adv = 0; *lsb = 0; return; }
+        if (!safe_read_i16(r, off + 2, &lsb_val)) { *adv = 0; *lsb = 0; return; }
+    } else {
+        /* Use last advance width, read lsb from extended array */
+        uint32_t last_off = f->hmtx_off + (uint32_t)(f->num_hmetrics - 1) * 4;
+        if (!safe_read_u16(r, last_off, &advance)) { *adv = 0; *lsb = 0; return; }
+        uint32_t ext_off = f->hmtx_off + (uint32_t)f->num_hmetrics * 4
+                         + (g - f->num_hmetrics) * 2;
+        if (!safe_read_i16(r, ext_off, &lsb_val)) { *adv = 0; *lsb = 0; return; }
+    }
+    *adv = advance;
+    *lsb = lsb_val;
 }
 
 int r8e_font_kern(R8EFont *f, uint32_t g1, uint32_t g2) {
-    (void)f; (void)g1; (void)g2; return 0;
+    if (!f || f->kern_len == 0) return 0;
+    const R8EFontReader *r = &f->reader;
+    uint32_t base = f->kern_off;
+
+    uint16_t version, n_tables;
+    if (!safe_read_u16(r, base, &version)) return 0;
+    if (!safe_read_u16(r, base + 2, &n_tables)) return 0;
+
+    uint32_t sub_off = base + 4;
+    for (uint16_t t = 0; t < n_tables; t++) {
+        uint16_t sub_version, sub_length, coverage;
+        if (!safe_read_u16(r, sub_off, &sub_version)) return 0;
+        if (!safe_read_u16(r, sub_off + 2, &sub_length)) return 0;
+        if (!safe_read_u16(r, sub_off + 4, &coverage)) return 0;
+
+        /* format 0, horizontal kerning */
+        uint16_t format = (uint16_t)(coverage >> 8);
+        bool horizontal = (coverage & 1) != 0;
+        if (format == 0 && horizontal) {
+            uint16_t n_pairs;
+            if (!safe_read_u16(r, sub_off + 6, &n_pairs)) return 0;
+
+            /* Binary search the pairs */
+            uint32_t pair_base = sub_off + 14; /* 6 header + 8 search params */
+            uint32_t target = (g1 << 16) | g2;
+            uint16_t lo = 0, hi = n_pairs;
+            while (lo < hi) {
+                uint16_t mid = (uint16_t)((lo + hi) / 2);
+                uint32_t pair_off = pair_base + (uint32_t)mid * 6;
+                uint16_t left, right;
+                if (!safe_read_u16(r, pair_off, &left)) return 0;
+                if (!safe_read_u16(r, pair_off + 2, &right)) return 0;
+                uint32_t key = ((uint32_t)left << 16) | right;
+                if (key < target) lo = (uint16_t)(mid + 1);
+                else if (key > target) hi = mid;
+                else {
+                    int16_t value;
+                    if (!safe_read_i16(r, pair_off + 4, &value)) return 0;
+                    return value;
+                }
+            }
+        }
+        sub_off += sub_length;
+    }
+    return 0;
 }
 
 uint32_t r8e_font_glyph_id(R8EFont *f, uint32_t cp) {
-    (void)f; (void)cp; return 0;
+    if (!f || f->cmap_format != 4 || cp > 0xFFFF) return 0;
+
+    const R8EFontReader *r = &f->reader;
+    uint32_t base = f->cmap_sub_off;
+
+    uint16_t length16;
+    if (!safe_read_u16(r, base + 2, &length16)) return 0;
+    /* Bounds-check the whole subtable */
+    if (base + length16 > r->length) return 0;
+
+    uint16_t seg_count_x2;
+    if (!safe_read_u16(r, base + 6, &seg_count_x2)) return 0;
+    uint16_t seg_count = seg_count_x2 / 2;
+    if (seg_count == 0 || seg_count > 10000) return 0;
+
+    /* Array offsets within the subtable */
+    uint32_t end_codes   = base + 14;
+    uint32_t start_codes = end_codes + seg_count_x2 + 2; /* +2 for reservedPad */
+    uint32_t id_deltas   = start_codes + seg_count_x2;
+    uint32_t id_range_off= id_deltas + seg_count_x2;
+
+    /* Binary search for the segment */
+    uint16_t lo = 0, hi = seg_count;
+    while (lo < hi) {
+        uint16_t mid = (uint16_t)((lo + hi) / 2);
+        uint16_t end_code;
+        if (!safe_read_u16(r, end_codes + (uint32_t)mid * 2, &end_code)) return 0;
+        if (end_code < cp)
+            lo = (uint16_t)(mid + 1);
+        else
+            hi = mid;
+    }
+    if (lo >= seg_count) return 0;
+
+    uint16_t end_code, start_code;
+    int16_t id_delta;
+    uint16_t range_off;
+    if (!safe_read_u16(r, end_codes + (uint32_t)lo * 2, &end_code)) return 0;
+    if (!safe_read_u16(r, start_codes + (uint32_t)lo * 2, &start_code)) return 0;
+    if (!safe_read_i16(r, id_deltas + (uint32_t)lo * 2, &id_delta)) return 0;
+    if (!safe_read_u16(r, id_range_off + (uint32_t)lo * 2, &range_off)) return 0;
+
+    if (cp < start_code) return 0;
+
+    if (range_off == 0) {
+        return (uint32_t)((cp + (uint16_t)id_delta) & 0xFFFF);
+    } else {
+        /* idRangeOffset is relative to its own position in the array */
+        uint32_t glyph_addr = id_range_off + (uint32_t)lo * 2
+                            + range_off
+                            + (cp - start_code) * 2;
+        uint16_t glyph_id;
+        if (!safe_read_u16(r, glyph_addr, &glyph_id)) return 0;
+        if (glyph_id == 0) return 0;
+        return (uint32_t)((glyph_id + (uint16_t)id_delta) & 0xFFFF);
+    }
 }
 
 bool r8e_font_glyph_box(R8EFont *f, uint32_t g, float s,

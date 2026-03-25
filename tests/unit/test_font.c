@@ -75,6 +75,150 @@ TEST(font_load_table_offset_past_eof) {
     ASSERT_TRUE(f == NULL);
 }
 
+/* === Helper to load a system font for testing === */
+static uint8_t *load_test_font(uint32_t *out_len) {
+    const char *paths[] = {
+        "/System/Library/Fonts/SFNS.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/Library/Fonts/Arial.ttf",
+        NULL
+    };
+    for (int i = 0; paths[i]; i++) {
+        FILE *f = fopen(paths[i], "rb");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        uint8_t *data = malloc((size_t)sz);
+        if (!data) { fclose(f); continue; }
+        fread(data, 1, (size_t)sz, f);
+        fclose(f);
+        *out_len = (uint32_t)sz;
+        return data;
+    }
+    return NULL;
+}
+
+/* === cmap tests === */
+
+TEST(font_load_system_font) {
+    uint32_t len = 0;
+    uint8_t *data = load_test_font(&len);
+    if (!data) return; /* skip gracefully */
+    R8EFont *f = r8e_font_load(data, len);
+    ASSERT_TRUE(f != NULL);
+    r8e_font_free(f);
+    free(data);
+}
+
+TEST(font_glyph_id_A) {
+    uint32_t len = 0;
+    uint8_t *data = load_test_font(&len);
+    if (!data) return;
+    R8EFont *f = r8e_font_load(data, len);
+    if (!f) { free(data); return; }
+    uint32_t gid = r8e_font_glyph_id(f, 'A');
+    ASSERT_TRUE(gid != 0);
+    r8e_font_free(f);
+    free(data);
+}
+
+TEST(font_glyph_id_space) {
+    uint32_t len = 0;
+    uint8_t *data = load_test_font(&len);
+    if (!data) return;
+    R8EFont *f = r8e_font_load(data, len);
+    if (!f) { free(data); return; }
+    uint32_t gid = r8e_font_glyph_id(f, ' ');
+    ASSERT_TRUE(gid != 0);
+    r8e_font_free(f);
+    free(data);
+}
+
+TEST(font_glyph_id_a_differs_A) {
+    uint32_t len = 0;
+    uint8_t *data = load_test_font(&len);
+    if (!data) return;
+    R8EFont *f = r8e_font_load(data, len);
+    if (!f) { free(data); return; }
+    uint32_t gid_a = r8e_font_glyph_id(f, 'a');
+    uint32_t gid_A = r8e_font_glyph_id(f, 'A');
+    ASSERT_TRUE(gid_a != gid_A);
+    r8e_font_free(f);
+    free(data);
+}
+
+TEST(font_glyph_id_missing) {
+    uint32_t len = 0;
+    uint8_t *data = load_test_font(&len);
+    if (!data) return;
+    R8EFont *f = r8e_font_load(data, len);
+    if (!f) { free(data); return; }
+    uint32_t gid = r8e_font_glyph_id(f, 0xFFFF);
+    ASSERT_TRUE(gid == 0);
+    r8e_font_free(f);
+    free(data);
+}
+
+/* === metrics tests === */
+
+TEST(font_vmetrics) {
+    uint32_t len = 0;
+    uint8_t *data = load_test_font(&len);
+    if (!data) return;
+    R8EFont *f = r8e_font_load(data, len);
+    if (!f) { free(data); return; }
+    int ascent, descent, line_gap;
+    r8e_font_vmetrics(f, &ascent, &descent, &line_gap);
+    ASSERT_TRUE(ascent > 0);
+    ASSERT_TRUE(descent <= 0);
+    r8e_font_free(f);
+    free(data);
+}
+
+TEST(font_hmetrics_A) {
+    uint32_t len = 0;
+    uint8_t *data = load_test_font(&len);
+    if (!data) return;
+    R8EFont *f = r8e_font_load(data, len);
+    if (!f) { free(data); return; }
+    uint32_t gid = r8e_font_glyph_id(f, 'A');
+    if (gid == 0) { r8e_font_free(f); free(data); return; }
+    int advance, lsb;
+    r8e_font_hmetrics(f, gid, &advance, &lsb);
+    ASSERT_TRUE(advance > 0);
+    r8e_font_free(f);
+    free(data);
+}
+
+TEST(font_hmetrics_space) {
+    uint32_t len = 0;
+    uint8_t *data = load_test_font(&len);
+    if (!data) return;
+    R8EFont *f = r8e_font_load(data, len);
+    if (!f) { free(data); return; }
+    uint32_t gid = r8e_font_glyph_id(f, ' ');
+    if (gid == 0) { r8e_font_free(f); free(data); return; }
+    int advance, lsb;
+    r8e_font_hmetrics(f, gid, &advance, &lsb);
+    ASSERT_TRUE(advance > 0);
+    r8e_font_free(f);
+    free(data);
+}
+
+TEST(font_scale) {
+    uint32_t len = 0;
+    uint8_t *data = load_test_font(&len);
+    if (!data) return;
+    R8EFont *f = r8e_font_load(data, len);
+    if (!f) { free(data); return; }
+    float s = r8e_font_scale(f, 32.0f);
+    ASSERT_TRUE(s > 0.0f);
+    ASSERT_TRUE(s < 1.0f);
+    r8e_font_free(f);
+    free(data);
+}
+
 /* === Bundled Font Tests (added in later tasks) === */
 
 void run_font_tests(void) {
@@ -84,4 +228,17 @@ void run_font_tests(void) {
     RUN_TEST(font_load_truncated_header);
     RUN_TEST(font_load_bad_magic);
     RUN_TEST(font_load_table_offset_past_eof);
+
+    /* cmap tests */
+    RUN_TEST(font_load_system_font);
+    RUN_TEST(font_glyph_id_A);
+    RUN_TEST(font_glyph_id_space);
+    RUN_TEST(font_glyph_id_a_differs_A);
+    RUN_TEST(font_glyph_id_missing);
+
+    /* metrics tests */
+    RUN_TEST(font_vmetrics);
+    RUN_TEST(font_hmetrics_A);
+    RUN_TEST(font_hmetrics_space);
+    RUN_TEST(font_scale);
 }
