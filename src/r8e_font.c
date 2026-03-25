@@ -166,7 +166,7 @@ R8EFont *r8e_font_load(const uint8_t *data, uint32_t length) {
         expected_loca = ((uint32_t)font->num_glyphs + 1) * 4;
     if (font->loca_len < expected_loca) goto fail;
 
-    /* Find cmap subtable (prefer format 4 for BMP) */
+    /* Find cmap subtable (prefer format 4, also support format 12) */
     {
         uint16_t cmap_num_sub;
         if (!safe_read_u16(&r, font->cmap_off + 2, &cmap_num_sub)) goto fail;
@@ -174,6 +174,7 @@ R8EFont *r8e_font_load(const uint8_t *data, uint32_t length) {
 
         uint32_t best_off = 0;
         int best_score = -1;
+        uint16_t best_fmt = 0;
         for (uint16_t ci = 0; ci < cmap_num_sub; ci++) {
             uint32_t rec_off = font->cmap_off + 4 + (uint32_t)ci * 8;
             uint16_t platID, encID;
@@ -182,26 +183,33 @@ R8EFont *r8e_font_load(const uint8_t *data, uint32_t length) {
             if (!safe_read_u16(&r, rec_off + 2, &encID)) goto fail;
             if (!safe_read_u32(&r, rec_off + 4, &sub_offset)) goto fail;
 
-            /* Score: prefer platformID=3,encodingID=1 (Windows Unicode BMP) */
+            uint32_t abs_off = font->cmap_off + sub_offset;
+            uint16_t fmt;
+            if (abs_off + 2 > length) continue;
+            if (!safe_read_u16(&r, abs_off, &fmt)) continue;
+            if (fmt != 4 && fmt != 12) continue;
+
+            /* Score: prefer format 4 with Windows BMP, then format 12 */
             int score = -1;
-            if (platID == 3 && encID == 1) score = 10;
-            else if (platID == 0) score = 5;
+            if (fmt == 4) {
+                if (platID == 3 && encID == 1) score = 20;
+                else if (platID == 0) score = 15;
+            } else if (fmt == 12) {
+                if (platID == 3 && encID == 10) score = 10;
+                else if (platID == 0) score = 8;
+                else score = 5;
+            }
 
             if (score > best_score) {
-                uint32_t abs_off = font->cmap_off + sub_offset;
-                uint16_t fmt;
-                if (abs_off + 2 > length) continue;
-                if (!safe_read_u16(&r, abs_off, &fmt)) continue;
-                if (fmt == 4) {
-                    best_off = abs_off;
-                    best_score = score;
-                }
+                best_off = abs_off;
+                best_score = score;
+                best_fmt = fmt;
             }
         }
 
         if (best_off != 0) {
             font->cmap_sub_off = best_off;
-            font->cmap_format = 4;
+            font->cmap_format = best_fmt;
         } else {
             font->cmap_format = 0;
         }
@@ -218,9 +226,15 @@ void r8e_font_free(R8EFont *font) {
     free(font);
 }
 
-/* Stub implementations for later tasks */
-R8EFont *r8e_font_load_default(void) { return NULL; }
-R8EFont *r8e_font_load_default2(void) { return NULL; }
+#include "r8e_font_inter.h"
+#include "r8e_font_opensans.h"
+
+R8EFont *r8e_font_load_default(void) {
+    return r8e_font_load(r8e_font_data_inter, r8e_font_data_inter_len);
+}
+R8EFont *r8e_font_load_default2(void) {
+    return r8e_font_load(r8e_font_data_opensans, r8e_font_data_opensans_len);
+}
 
 float r8e_font_scale(R8EFont *font, float pixel_height) {
     if (!font || font->units_per_em == 0) return 0;
@@ -309,15 +323,12 @@ int r8e_font_kern(R8EFont *f, uint32_t g1, uint32_t g2) {
     return 0;
 }
 
-uint32_t r8e_font_glyph_id(R8EFont *f, uint32_t cp) {
-    if (!f || f->cmap_format != 4 || cp > 0xFFFF) return 0;
-
-    const R8EFontReader *r = &f->reader;
-    uint32_t base = f->cmap_sub_off;
+/* Format 4 cmap lookup (BMP) */
+static uint32_t cmap_format4_lookup(const R8EFontReader *r, uint32_t base, uint32_t cp) {
+    if (cp > 0xFFFF) return 0;
 
     uint16_t length16;
     if (!safe_read_u16(r, base + 2, &length16)) return 0;
-    /* Bounds-check the whole subtable */
     if (base + length16 > r->length) return 0;
 
     uint16_t seg_count_x2;
@@ -325,22 +336,18 @@ uint32_t r8e_font_glyph_id(R8EFont *f, uint32_t cp) {
     uint16_t seg_count = seg_count_x2 / 2;
     if (seg_count == 0 || seg_count > 10000) return 0;
 
-    /* Array offsets within the subtable */
     uint32_t end_codes   = base + 14;
-    uint32_t start_codes = end_codes + seg_count_x2 + 2; /* +2 for reservedPad */
+    uint32_t start_codes = end_codes + seg_count_x2 + 2;
     uint32_t id_deltas   = start_codes + seg_count_x2;
     uint32_t id_range_off= id_deltas + seg_count_x2;
 
-    /* Binary search for the segment */
     uint16_t lo = 0, hi = seg_count;
     while (lo < hi) {
         uint16_t mid = (uint16_t)((lo + hi) / 2);
         uint16_t end_code;
         if (!safe_read_u16(r, end_codes + (uint32_t)mid * 2, &end_code)) return 0;
-        if (end_code < cp)
-            lo = (uint16_t)(mid + 1);
-        else
-            hi = mid;
+        if (end_code < cp) lo = (uint16_t)(mid + 1);
+        else hi = mid;
     }
     if (lo >= seg_count) return 0;
 
@@ -357,15 +364,57 @@ uint32_t r8e_font_glyph_id(R8EFont *f, uint32_t cp) {
     if (range_off == 0) {
         return (uint32_t)((cp + (uint16_t)id_delta) & 0xFFFF);
     } else {
-        /* idRangeOffset is relative to its own position in the array */
         uint32_t glyph_addr = id_range_off + (uint32_t)lo * 2
-                            + range_off
-                            + (cp - start_code) * 2;
+                            + range_off + (cp - start_code) * 2;
         uint16_t glyph_id;
         if (!safe_read_u16(r, glyph_addr, &glyph_id)) return 0;
         if (glyph_id == 0) return 0;
         return (uint32_t)((glyph_id + (uint16_t)id_delta) & 0xFFFF);
     }
+}
+
+/* Format 12 cmap lookup (full Unicode) */
+static uint32_t cmap_format12_lookup(const R8EFontReader *r, uint32_t base, uint32_t cp) {
+    /* Format 12 header: format(2) + reserved(2) + length(4) + language(4) + numGroups(4) */
+    uint32_t num_groups;
+    if (!safe_read_u32(r, base + 12, &num_groups)) return 0;
+    if (num_groups > 100000) return 0;  /* sanity limit */
+
+    /* Validate table fits */
+    uint32_t groups_base = base + 16;
+    uint32_t table_end = groups_base + num_groups * 12;
+    if (table_end > r->length) return 0;
+
+    /* Binary search the groups */
+    uint32_t lo = 0, hi = num_groups;
+    while (lo < hi) {
+        uint32_t mid = (lo + hi) / 2;
+        uint32_t grp = groups_base + mid * 12;
+        uint32_t start_code, end_code;
+        if (!safe_read_u32(r, grp, &start_code)) return 0;
+        if (!safe_read_u32(r, grp + 4, &end_code)) return 0;
+        if (cp < start_code) hi = mid;
+        else if (cp > end_code) lo = mid + 1;
+        else {
+            uint32_t start_glyph;
+            if (!safe_read_u32(r, grp + 8, &start_glyph)) return 0;
+            return start_glyph + (cp - start_code);
+        }
+    }
+    return 0;
+}
+
+uint32_t r8e_font_glyph_id(R8EFont *f, uint32_t cp) {
+    if (!f || f->cmap_format == 0) return 0;
+
+    const R8EFontReader *r = &f->reader;
+    uint32_t base = f->cmap_sub_off;
+
+    if (f->cmap_format == 4)
+        return cmap_format4_lookup(r, base, cp);
+    else if (f->cmap_format == 12)
+        return cmap_format12_lookup(r, base, cp);
+    return 0;
 }
 
 /* =========================================================================

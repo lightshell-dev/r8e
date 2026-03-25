@@ -308,7 +308,40 @@ TEST(font_rasterize_size_scaling) {
     free(data);
 }
 
-/* === Bundled Font Tests (added in later tasks) === */
+/* === Bundled Font Tests === */
+
+TEST(font_load_default_inter) {
+    R8EFont *f = r8e_font_load_default();
+    ASSERT_TRUE(f != NULL);
+    uint32_t gid = r8e_font_glyph_id(f, 'A');
+    ASSERT_TRUE(gid != 0);
+    r8e_font_free(f);
+}
+
+TEST(font_load_default_opensans) {
+    R8EFont *f = r8e_font_load_default2();
+    ASSERT_TRUE(f != NULL);
+    uint32_t gid = r8e_font_glyph_id(f, 'A');
+    ASSERT_TRUE(gid != 0);
+    r8e_font_free(f);
+}
+
+TEST(font_rasterize_bundled_hello) {
+    R8EFont *f = r8e_font_load_default();
+    ASSERT_TRUE(f != NULL);
+    float scale = r8e_font_scale(f, 32.0f);
+    const char *text = "Hello";
+    float total = 0;
+    for (int i = 0; text[i]; i++) {
+        uint32_t gid = r8e_font_glyph_id(f, (uint32_t)text[i]);
+        ASSERT_TRUE(gid != 0);
+        int adv, lsb;
+        r8e_font_hmetrics(f, gid, &adv, &lsb);
+        total += adv * scale;
+    }
+    ASSERT_TRUE(total > 50.0f && total < 200.0f);
+    r8e_font_free(f);
+}
 
 void run_font_tests(void) {
     RUN_TEST(font_load_null);
@@ -336,4 +369,9 @@ void run_font_tests(void) {
     RUN_TEST(font_rasterize_A);
     RUN_TEST(font_rasterize_all_ascii);
     RUN_TEST(font_rasterize_size_scaling);
+
+    /* bundled font tests */
+    RUN_TEST(font_load_default_inter);
+    RUN_TEST(font_load_default_opensans);
+    RUN_TEST(font_rasterize_bundled_hello);
 }
