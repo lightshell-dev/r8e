@@ -108,10 +108,18 @@ extern R8EValue          r8e_call_function(R8EInterpContext *ctx,
 extern int r8e_atom_table_init(R8EAtomTable *table);
 extern void r8e_atom_table_destroy(R8EAtomTable *table);
 
-/* --- External functions from r8e_module.c / r8e_parse.c --- */
-extern R8EValue r8e_compile_module(R8EContext *ctx, const char *source,
-                                    size_t len, const char *filename);
-extern R8EValue r8e_exec_function(R8EContext *ctx, R8EValue func);
+/* --- Weak stubs for module functions (overridden by r8e_module.c if linked) --- */
+__attribute__((weak))
+R8EValue r8e_compile_module(R8EContext *ctx, const char *source,
+                             size_t len, const char *filename) {
+    (void)ctx; (void)source; (void)len; (void)filename;
+    return R8E_UNDEFINED;
+}
+__attribute__((weak))
+R8EValue r8e_exec_function(R8EContext *ctx, R8EValue func) {
+    (void)ctx; (void)func;
+    return R8E_UNDEFINED;
+}
 
 /* --- External functions from r8e_weakref.c (Map/Set) --- */
 extern R8EValue r8e_map_new(R8EContext *ctx);
