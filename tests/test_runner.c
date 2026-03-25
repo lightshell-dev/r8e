@@ -265,6 +265,9 @@ void run_e2e_app_tests(void);
 /* GPU display list tests */
 void run_display_list_tests(void);
 
+/* Font parser tests */
+void run_font_tests(void);
+
 /* =========================================================================
  * Main
  * ========================================================================= */
@@ -396,6 +399,7 @@ int main(int argc, char **argv) {
     run_suite_isolated("raf", run_raf_tests);
     run_suite_isolated("e2e-app", run_e2e_app_tests);
     run_suite_isolated("display-list", run_display_list_tests);
+    run_suite_isolated("font", run_font_tests);
 
     printf("=== Summary: %d passed, %d failed out of %d tests ===\n",
            g_tests_passed, g_tests_failed, g_tests_run);

@@ -83,7 +83,8 @@ SRCS_CORE = \
 	src/r8e_iterator.c \
 	src/r8e_proxy.c \
 	src/r8e_weakref.c \
-	src/r8e_raf.c
+	src/r8e_raf.c \
+	src/r8e_font.c
 
 # Security module sources
 SRCS_SECURITY = \
