@@ -219,6 +219,95 @@ TEST(font_scale) {
     free(data);
 }
 
+/* === Glyph outline + rasterizer tests === */
+
+TEST(font_glyph_box_A) {
+    uint32_t len;
+    uint8_t *data = load_test_font(&len);
+    if (!data) return;
+    R8EFont *f = r8e_font_load(data, len);
+    ASSERT_TRUE(f != NULL);
+    uint32_t gid = r8e_font_glyph_id(f, 'A');
+    float scale = r8e_font_scale(f, 32.0f);
+    int x0, y0, x1, y1;
+    bool ok = r8e_font_glyph_box(f, gid, scale, &x0, &y0, &x1, &y1);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(x1 > x0);
+    ASSERT_TRUE(y1 > y0);
+    ASSERT_TRUE(x1 - x0 < 100);
+    ASSERT_TRUE(y1 - y0 < 100);
+    r8e_font_free(f);
+    free(data);
+}
+
+TEST(font_rasterize_A) {
+    uint32_t len;
+    uint8_t *data = load_test_font(&len);
+    if (!data) return;
+    R8EFont *f = r8e_font_load(data, len);
+    ASSERT_TRUE(f != NULL);
+    uint32_t gid = r8e_font_glyph_id(f, 'A');
+    float scale = r8e_font_scale(f, 32.0f);
+    int x0, y0, x1, y1;
+    r8e_font_glyph_box(f, gid, scale, &x0, &y0, &x1, &y1);
+    int w = x1 - x0, h = y1 - y0;
+    ASSERT_TRUE(w > 0 && h > 0);
+    uint8_t *pixels = calloc((size_t)(w * h), 1);
+    R8EGlyphBitmap bmp = { pixels, w, h, x0, y0 };
+    bool ok = r8e_font_rasterize(f, gid, scale, &bmp);
+    ASSERT_TRUE(ok);
+    int nonzero = 0;
+    for (int i = 0; i < w * h; i++) if (pixels[i] > 0) nonzero++;
+    ASSERT_TRUE(nonzero > 0);
+    free(pixels);
+    r8e_font_free(f);
+    free(data);
+}
+
+TEST(font_rasterize_all_ascii) {
+    uint32_t len;
+    uint8_t *data = load_test_font(&len);
+    if (!data) return;
+    R8EFont *f = r8e_font_load(data, len);
+    ASSERT_TRUE(f != NULL);
+    float scale = r8e_font_scale(f, 24.0f);
+    int crash_count = 0;
+    for (int c = 0x21; c <= 0x7E; c++) {
+        uint32_t gid = r8e_font_glyph_id(f, (uint32_t)c);
+        if (gid == 0) continue;
+        int x0, y0, x1, y1;
+        if (!r8e_font_glyph_box(f, gid, scale, &x0, &y0, &x1, &y1)) continue;
+        int w = x1 - x0, h = y1 - y0;
+        if (w <= 0 || h <= 0) continue;
+        uint8_t *px = calloc((size_t)(w * h), 1);
+        R8EGlyphBitmap bmp = { px, w, h, x0, y0 };
+        r8e_font_rasterize(f, gid, scale, &bmp);
+        free(px);
+    }
+    (void)crash_count;
+    r8e_font_free(f);
+    free(data);
+}
+
+TEST(font_rasterize_size_scaling) {
+    uint32_t len;
+    uint8_t *data = load_test_font(&len);
+    if (!data) return;
+    R8EFont *f = r8e_font_load(data, len);
+    ASSERT_TRUE(f != NULL);
+    uint32_t gid = r8e_font_glyph_id(f, 'H');
+    int x0_16, y0_16, x1_16, y1_16;
+    int x0_32, y0_32, x1_32, y1_32;
+    r8e_font_glyph_box(f, gid, r8e_font_scale(f, 16.0f), &x0_16, &y0_16, &x1_16, &y1_16);
+    r8e_font_glyph_box(f, gid, r8e_font_scale(f, 32.0f), &x0_32, &y0_32, &x1_32, &y1_32);
+    int h16 = y1_16 - y0_16;
+    int h32 = y1_32 - y0_32;
+    ASSERT_TRUE(h32 > h16);
+    ASSERT_TRUE(h32 >= h16 * 3 / 2);
+    r8e_font_free(f);
+    free(data);
+}
+
 /* === Bundled Font Tests (added in later tasks) === */
 
 void run_font_tests(void) {
@@ -241,4 +330,10 @@ void run_font_tests(void) {
     RUN_TEST(font_hmetrics_A);
     RUN_TEST(font_hmetrics_space);
     RUN_TEST(font_scale);
+
+    /* glyph outline + rasterizer tests */
+    RUN_TEST(font_glyph_box_A);
+    RUN_TEST(font_rasterize_A);
+    RUN_TEST(font_rasterize_all_ascii);
+    RUN_TEST(font_rasterize_size_scaling);
 }
