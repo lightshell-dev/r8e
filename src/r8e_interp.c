@@ -1488,8 +1488,14 @@ static void ensure_method_atoms(void) {
     g_method_atoms.trim = r8e_atom_intern_cstr(NULL, "trim");
     g_method_atoms.startsWith = r8e_atom_intern_cstr(NULL, "startsWith");
     g_method_atoms.endsWith = r8e_atom_intern_cstr(NULL, "endsWith");
+    g_method_atoms.repeat = r8e_atom_intern_cstr(NULL, "repeat");
+    g_method_atoms.padStart = r8e_atom_intern_cstr(NULL, "padStart");
+    g_method_atoms.padEnd = r8e_atom_intern_cstr(NULL, "padEnd");
+    g_method_atoms.trimStart = r8e_atom_intern_cstr(NULL, "trimStart");
+    g_method_atoms.trimEnd = r8e_atom_intern_cstr(NULL, "trimEnd");
     g_method_atoms.substring = r8e_atom_intern_cstr(NULL, "substring");
     g_method_atoms.charAt = r8e_atom_intern_cstr(NULL, "charAt");
+    g_method_atoms.charCodeAt = r8e_atom_intern_cstr(NULL, "charCodeAt");
     g_method_atoms.replace = r8e_atom_intern_cstr(NULL, "replace");
     g_method_atoms.replaceAll = r8e_atom_intern_cstr(NULL, "replaceAll");
     g_method_atoms.toLowerCase = r8e_atom_intern_cstr(NULL, "toLowerCase");

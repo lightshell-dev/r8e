@@ -415,9 +415,8 @@ static void obj_assign_cb(uint32_t atom, R8EValue key_tagged,
         if (t0->key0 == key_tagged || t0->key0 == 0) {
             t0->key0 = key_tagged;
             t0->val0 = val;
-            return;
         }
-        /* Need to promote - do simple approach: just skip */
+        /* Tier 0 full - cannot add more properties without realloc */
         return;
     } else if (tier == 1) {
         ApiObjTier1Fwd *t1 = (ApiObjTier1Fwd *)ptr;
