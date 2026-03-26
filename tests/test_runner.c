@@ -268,6 +268,12 @@ void run_display_list_tests(void);
 /* Font parser tests */
 void run_font_tests(void);
 
+/* CSS custom properties (variables) tests */
+void run_css_vars_tests(void);
+
+/* CSS shorthand property expansion tests */
+void run_css_shorthand_tests(void);
+
 /* =========================================================================
  * Main
  * ========================================================================= */
@@ -400,6 +406,8 @@ int main(int argc, char **argv) {
     run_suite_isolated("e2e-app", run_e2e_app_tests);
     run_suite_isolated("display-list", run_display_list_tests);
     run_suite_isolated("font", run_font_tests);
+    run_suite_isolated("css-vars", run_css_vars_tests);
+    run_suite_isolated("css-shorthand", run_css_shorthand_tests);
 
     printf("=== Summary: %d passed, %d failed out of %d tests ===\n",
            g_tests_passed, g_tests_failed, g_tests_run);

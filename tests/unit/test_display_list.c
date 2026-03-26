@@ -343,6 +343,31 @@ TEST(dl_push_fill_path) {
     r8e_dl_arena_destroy(&arena);
 }
 
+TEST(dl_push_box_shadow) {
+    R8EDLArena arena;
+    r8e_dl_arena_init(&arena, 65536);
+    DisplayList dl;
+    r8e_dl_init(&dl, &arena);
+
+    r8e_dl_push_box_shadow(&dl, 100.0f, 200.0f, 300.0f, 150.0f,
+                            0.0f, 4.0f, 24.0f, 0x0A000000u, 8.0f);
+
+    ASSERT_EQ_INT(dl.count, 1);
+    ASSERT_EQ_INT(dl.commands[0].type, DL_BOX_SHADOW);
+    ASSERT_FLOAT_EQ(dl.commands[0].box_shadow.x, 100.0f);
+    ASSERT_FLOAT_EQ(dl.commands[0].box_shadow.y, 200.0f);
+    ASSERT_FLOAT_EQ(dl.commands[0].box_shadow.w, 300.0f);
+    ASSERT_FLOAT_EQ(dl.commands[0].box_shadow.h, 150.0f);
+    ASSERT_FLOAT_EQ(dl.commands[0].box_shadow.offset_x, 0.0f);
+    ASSERT_FLOAT_EQ(dl.commands[0].box_shadow.offset_y, 4.0f);
+    ASSERT_FLOAT_EQ(dl.commands[0].box_shadow.blur, 24.0f);
+    ASSERT_EQ(dl.commands[0].box_shadow.color, 0x0A000000u);
+    ASSERT_FLOAT_EQ(dl.commands[0].box_shadow.border_radius, 8.0f);
+
+    r8e_dl_destroy(&dl);
+    r8e_dl_arena_destroy(&arena);
+}
+
 TEST(dl_clear) {
     R8EDLArena arena;
     r8e_dl_arena_init(&arena, 65536);
@@ -436,6 +461,7 @@ void run_display_list_tests(void) {
     RUN_TEST(dl_push_clip_ops);
     RUN_TEST(dl_push_opacity);
     RUN_TEST(dl_push_fill_path);
+    RUN_TEST(dl_push_box_shadow);
     RUN_TEST(dl_clear);
     RUN_TEST(dl_mixed_commands);
 }

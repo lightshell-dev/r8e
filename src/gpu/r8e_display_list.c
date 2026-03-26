@@ -238,6 +238,23 @@ void r8e_dl_push_fill_path(DisplayList *dl, R8EPathCommand *commands,
     cmd->fill_path.color = color;
 }
 
+void r8e_dl_push_box_shadow(DisplayList *dl, float x, float y, float w, float h,
+                             float offset_x, float offset_y, float blur,
+                             uint32_t color, float border_radius) {
+    DisplayCommand *cmd = r8e_dl_push(dl);
+    if (!cmd) return;
+    cmd->type = DL_BOX_SHADOW;
+    cmd->box_shadow.x = x;
+    cmd->box_shadow.y = y;
+    cmd->box_shadow.w = w;
+    cmd->box_shadow.h = h;
+    cmd->box_shadow.offset_x = offset_x;
+    cmd->box_shadow.offset_y = offset_y;
+    cmd->box_shadow.blur = blur;
+    cmd->box_shadow.color = color;
+    cmd->box_shadow.border_radius = border_radius;
+}
+
 /* =========================================================================
  * Arena-Allocated Helpers
  * ========================================================================= */

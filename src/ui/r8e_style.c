@@ -406,6 +406,11 @@ typedef struct R8EUIComputedStyle {
     /* Positioning offsets */
     float    top, right, bottom, left;
     int32_t  z_index;
+
+    /* Box shadow (simplified: single shadow, no inset) */
+    float    shadow_x, shadow_y, shadow_blur, shadow_spread;
+    uint32_t shadow_color;
+    bool     has_shadow;
 } R8EUIComputedStyle;
 
 /* -------------------------------------------------------------------------
@@ -546,6 +551,222 @@ static uint32_t r8e_ui_style_atom_intern_cstr(const char *str) {
 static const char *r8e_ui_style_atom_str(uint32_t atom) {
     if (atom == 0 || atom > r8e_ui_style_atom_table.count) return "";
     return r8e_ui_style_atom_table.entries[atom].name;
+}
+
+
+/* =========================================================================
+ * CSS Custom Properties (Variables)
+ *
+ * Global variable table for :root { --name: value } declarations.
+ * var() references are resolved before property values are applied.
+ * Supports fallback values: var(--name, fallback).
+ * Supports variable-in-variable with recursive resolution (max depth 10).
+ * ========================================================================= */
+
+#define NCSS_MAX_CSS_VARS 128
+#define NCSS_MAX_VAR_DEPTH 10
+
+typedef struct {
+    char name[64];    /* e.g., "--bg" */
+    char value[128];  /* e.g., "#ffffff" */
+} NCSSVariable;
+
+static NCSSVariable g_css_vars[NCSS_MAX_CSS_VARS];
+static int g_css_var_count = 0;
+
+/**
+ * Set a CSS custom property (variable) in the global table.
+ * If the variable already exists, its value is updated.
+ */
+void r8e_ui_css_var_set(const char *name, const char *value) {
+    if (!name || !value) return;
+    if (name[0] != '-' || name[1] != '-') return; /* must start with -- */
+
+    /* Update existing */
+    for (int i = 0; i < g_css_var_count; i++) {
+        if (strcmp(g_css_vars[i].name, name) == 0) {
+            size_t vlen = strlen(value);
+            if (vlen > 127) vlen = 127;
+            memcpy(g_css_vars[i].value, value, vlen);
+            g_css_vars[i].value[vlen] = '\0';
+            return;
+        }
+    }
+
+    /* Add new */
+    if (g_css_var_count >= NCSS_MAX_CSS_VARS) return;
+    size_t nlen = strlen(name);
+    if (nlen > 63) nlen = 63;
+    memcpy(g_css_vars[g_css_var_count].name, name, nlen);
+    g_css_vars[g_css_var_count].name[nlen] = '\0';
+
+    size_t vlen = strlen(value);
+    if (vlen > 127) vlen = 127;
+    memcpy(g_css_vars[g_css_var_count].value, value, vlen);
+    g_css_vars[g_css_var_count].value[vlen] = '\0';
+
+    g_css_var_count++;
+}
+
+/**
+ * Get a CSS custom property value by name.
+ * Returns NULL if not found.
+ */
+const char *r8e_ui_css_var_get(const char *name) {
+    if (!name) return NULL;
+    for (int i = 0; i < g_css_var_count; i++) {
+        if (strcmp(g_css_vars[i].name, name) == 0) {
+            return g_css_vars[i].value;
+        }
+    }
+    return NULL;
+}
+
+/**
+ * Clear all CSS custom properties.
+ */
+void r8e_ui_css_var_clear(void) {
+    g_css_var_count = 0;
+}
+
+/**
+ * Resolve a value that may contain var() references.
+ * Handles: var(--name), var(--name, fallback), and nested var() in values.
+ * Returns the resolved value in a static buffer.
+ * The caller must use the result before the next call to this function.
+ */
+static const char *ncss_resolve_var(const char *value, int depth) {
+    static char resolved[256];
+    if (!value || depth > NCSS_MAX_VAR_DEPTH) return value;
+    if (strncmp(value, "var(", 4) != 0) return value;
+
+    /* Parse var(--name) or var(--name, fallback) */
+    const char *p = value + 4;
+
+    /* Skip whitespace */
+    while (*p == ' ' || *p == '\t') p++;
+
+    /* Extract variable name */
+    const char *name_start = p;
+    while (*p && *p != ')' && *p != ',') p++;
+
+    /* Trim trailing whitespace from name */
+    const char *name_end = p;
+    while (name_end > name_start &&
+           (*(name_end - 1) == ' ' || *(name_end - 1) == '\t'))
+        name_end--;
+
+    char var_name[64];
+    size_t name_len = (size_t)(name_end - name_start);
+    if (name_len > 63) name_len = 63;
+    memcpy(var_name, name_start, name_len);
+    var_name[name_len] = '\0';
+
+    /* Extract fallback if present */
+    char fallback[128] = "";
+    if (*p == ',') {
+        p++; /* skip comma */
+        while (*p == ' ' || *p == '\t') p++;
+        const char *fb_start = p;
+        /* Find matching closing paren, accounting for nested parens */
+        int paren_depth = 1;
+        while (*p && paren_depth > 0) {
+            if (*p == '(') paren_depth++;
+            else if (*p == ')') {
+                paren_depth--;
+                if (paren_depth == 0) break;
+            }
+            p++;
+        }
+        const char *fb_end = p;
+        while (fb_end > fb_start &&
+               (*(fb_end - 1) == ' ' || *(fb_end - 1) == '\t'))
+            fb_end--;
+        size_t fb_len = (size_t)(fb_end - fb_start);
+        if (fb_len > 127) fb_len = 127;
+        memcpy(fallback, fb_start, fb_len);
+        fallback[fb_len] = '\0';
+    }
+
+    /* Look up variable */
+    const char *found = r8e_ui_css_var_get(var_name);
+    const char *result;
+    if (found) {
+        result = found;
+    } else if (fallback[0]) {
+        result = fallback;
+    } else {
+        return value; /* unresolvable, return as-is */
+    }
+
+    /* Recursively resolve if the result itself contains var() */
+    if (strncmp(result, "var(", 4) == 0) {
+        return ncss_resolve_var(result, depth + 1);
+    }
+
+    /* Copy to static buffer for return */
+    size_t rlen = strlen(result);
+    if (rlen > 255) rlen = 255;
+    memcpy(resolved, result, rlen);
+    resolved[rlen] = '\0';
+    return resolved;
+}
+
+/**
+ * Parse :root declarations and store --* properties as CSS variables.
+ * Called from the stylesheet parser when a :root selector is encountered.
+ */
+static void ncss_store_root_variables(const char *decl_start) {
+    const char *p = decl_start;
+
+    while (*p && *p != '}') {
+        /* Skip whitespace */
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (*p == '}' || !*p) break;
+
+        /* Property name */
+        const char *prop_start = p;
+        while (*p && *p != ':' && *p != '}' && *p != ';') p++;
+        if (*p != ':') { if (*p == ';') p++; continue; }
+
+        const char *prop_end = p;
+        while (prop_end > prop_start &&
+               (*(prop_end - 1) == ' ' || *(prop_end - 1) == '\t'))
+            prop_end--;
+
+        p++; /* skip ':' */
+        while (*p == ' ' || *p == '\t') p++;
+
+        /* Value */
+        const char *val_start = p;
+        while (*p && *p != ';' && *p != '}') p++;
+
+        const char *val_end = p;
+        while (val_end > val_start &&
+               (*(val_end - 1) == ' ' || *(val_end - 1) == '\t'))
+            val_end--;
+
+        /* Check if this is a custom property (starts with --) */
+        if (prop_end - prop_start >= 2 &&
+            prop_start[0] == '-' && prop_start[1] == '-' &&
+            val_end > val_start) {
+            char name_buf[64];
+            size_t nlen = (size_t)(prop_end - prop_start);
+            if (nlen > 63) nlen = 63;
+            memcpy(name_buf, prop_start, nlen);
+            name_buf[nlen] = '\0';
+
+            char val_buf[128];
+            size_t vlen = (size_t)(val_end - val_start);
+            if (vlen > 127) vlen = 127;
+            memcpy(val_buf, val_start, vlen);
+            val_buf[vlen] = '\0';
+
+            r8e_ui_css_var_set(name_buf, val_buf);
+        }
+
+        if (*p == ';') p++;
+    }
 }
 
 
@@ -1043,6 +1264,210 @@ static uint32_t ncss_selector_specificity(const R8EUISelector *sel) {
 
 
 /* =========================================================================
+ * Section 5b: CSS Shorthand Property Expansion
+ *
+ * When the parser encounters a shorthand property (e.g., "background",
+ * "border", "flex"), expand it into multiple longhand declarations.
+ * ========================================================================= */
+
+/**
+ * Add a single declaration to a rule.
+ */
+static bool ncss_add_decl(R8EUICSSRule *rule, R8EUICSSPropertyID prop,
+                           const char *value, uint32_t val_len,
+                           uint8_t important) {
+    if (!ncss_decl_grow(rule)) return false;
+    R8EUICSSDecl *decl = &rule->declarations[rule->decl_count];
+    decl->property = prop;
+    decl->important = important;
+    decl->value = (char *)malloc(val_len + 1);
+    if (decl->value) {
+        memcpy(decl->value, value, val_len);
+        decl->value[val_len] = '\0';
+        decl->value_len = (uint16_t)val_len;
+    } else {
+        decl->value_len = 0;
+    }
+    rule->decl_count++;
+    return true;
+}
+
+/**
+ * Split a value string into whitespace-separated tokens.
+ * Returns the number of tokens found (up to max_tokens).
+ */
+static int ncss_split_value(const char *value,
+                            const char *toks[], uint32_t lens[],
+                            int max_tokens) {
+    int count = 0;
+    const char *p = value;
+    while (count < max_tokens) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        toks[count] = p;
+        const char *start = p;
+        while (*p && *p != ' ' && *p != '\t') p++;
+        lens[count] = (uint32_t)(p - start);
+        count++;
+    }
+    return count;
+}
+
+/**
+ * Check if a token looks like a CSS length (starts with digit, dot, or minus).
+ */
+static bool ncss_is_length_token(const char *tok, uint32_t len) {
+    if (len == 0) return false;
+    return (tok[0] >= '0' && tok[0] <= '9') || tok[0] == '.' || tok[0] == '-';
+}
+
+/**
+ * Check if a token is a CSS border-style keyword.
+ */
+static bool ncss_is_border_style(const char *tok, uint32_t len) {
+    if (len == 4 && memcmp(tok, "none", 4) == 0) return true;
+    if (len == 5 && memcmp(tok, "solid", 5) == 0) return true;
+    if (len == 6 && memcmp(tok, "dashed", 6) == 0) return true;
+    if (len == 6 && memcmp(tok, "dotted", 6) == 0) return true;
+    if (len == 6 && memcmp(tok, "double", 6) == 0) return true;
+    if (len == 6 && memcmp(tok, "groove", 6) == 0) return true;
+    if (len == 5 && memcmp(tok, "ridge", 5) == 0) return true;
+    if (len == 5 && memcmp(tok, "inset", 5) == 0) return true;
+    if (len == 6 && memcmp(tok, "outset", 6) == 0) return true;
+    if (len == 6 && memcmp(tok, "hidden", 6) == 0) return true;
+    return false;
+}
+
+/**
+ * Expand a CSS shorthand property into longhand declarations.
+ * Returns true if the property was recognized as a shorthand.
+ */
+static bool ncss_expand_shorthand(R8EUICSSRule *rule, const char *prop,
+                                   const char *value, uint8_t important) {
+    uint32_t val_len = (uint32_t)strlen(value);
+
+    /* --- background: <color> --- */
+    if (strcmp(prop, "background") == 0) {
+        ncss_add_decl(rule, NCSS_PROP_BACKGROUND_COLOR, value, val_len,
+                       important);
+        return true;
+    }
+
+    /* --- border: <width> <style> <color> --- */
+    if (strcmp(prop, "border") == 0) {
+        const char *toks[3];
+        uint32_t lens[3];
+        int n = ncss_split_value(value, toks, lens, 3);
+
+        for (int i = 0; i < n; i++) {
+            char tmp[128];
+            uint32_t tl = lens[i] < 127 ? lens[i] : 127;
+            memcpy(tmp, toks[i], tl);
+            tmp[tl] = '\0';
+
+            if (ncss_is_length_token(toks[i], lens[i])) {
+                ncss_add_decl(rule, NCSS_PROP_BORDER_WIDTH, tmp, tl,
+                               important);
+            } else if (ncss_is_border_style(toks[i], lens[i])) {
+                /* border-style not modeled in computed style; skip */
+            } else {
+                /* Assume it's a color */
+                ncss_add_decl(rule, NCSS_PROP_BORDER_COLOR, tmp, tl,
+                               important);
+            }
+        }
+        return true;
+    }
+
+    /* --- border-top/right/bottom/left: <width> <style> <color> --- */
+    static const struct {
+        const char *name;
+        R8EUICSSPropertyID width_prop;
+    } border_sides[] = {
+        { "border-top",    NCSS_PROP_BORDER_TOP_WIDTH },
+        { "border-right",  NCSS_PROP_BORDER_RIGHT_WIDTH },
+        { "border-bottom", NCSS_PROP_BORDER_BOTTOM_WIDTH },
+        { "border-left",   NCSS_PROP_BORDER_LEFT_WIDTH },
+    };
+    for (int s = 0; s < 4; s++) {
+        if (strcmp(prop, border_sides[s].name) == 0) {
+            const char *toks[3];
+            uint32_t lens[3];
+            int n = ncss_split_value(value, toks, lens, 3);
+
+            for (int i = 0; i < n; i++) {
+                char tmp[128];
+                uint32_t tl = lens[i] < 127 ? lens[i] : 127;
+                memcpy(tmp, toks[i], tl);
+                tmp[tl] = '\0';
+
+                if (ncss_is_length_token(toks[i], lens[i])) {
+                    ncss_add_decl(rule, border_sides[s].width_prop, tmp, tl,
+                                   important);
+                } else if (ncss_is_border_style(toks[i], lens[i])) {
+                    /* border-style not modeled; skip */
+                } else {
+                    ncss_add_decl(rule, NCSS_PROP_BORDER_COLOR, tmp, tl,
+                                   important);
+                }
+            }
+            return true;
+        }
+    }
+
+    /* --- flex: <grow> or flex: <grow> <shrink> <basis> or flex: none --- */
+    if (strcmp(prop, "flex") == 0) {
+        if (strcmp(value, "none") == 0) {
+            ncss_add_decl(rule, NCSS_PROP_FLEX_GROW, "0", 1, important);
+            ncss_add_decl(rule, NCSS_PROP_FLEX_SHRINK, "0", 1, important);
+            ncss_add_decl(rule, NCSS_PROP_FLEX_BASIS, "auto", 4, important);
+            return true;
+        }
+        if (strcmp(value, "auto") == 0) {
+            ncss_add_decl(rule, NCSS_PROP_FLEX_GROW, "1", 1, important);
+            ncss_add_decl(rule, NCSS_PROP_FLEX_SHRINK, "1", 1, important);
+            ncss_add_decl(rule, NCSS_PROP_FLEX_BASIS, "auto", 4, important);
+            return true;
+        }
+
+        const char *toks[3];
+        uint32_t lens[3];
+        int n = ncss_split_value(value, toks, lens, 3);
+
+        if (n == 1) {
+            /* flex: <grow> -> grow=N, shrink=1, basis=0 */
+            char tmp[32];
+            uint32_t tl = lens[0] < 31 ? lens[0] : 31;
+            memcpy(tmp, toks[0], tl);
+            tmp[tl] = '\0';
+            ncss_add_decl(rule, NCSS_PROP_FLEX_GROW, tmp, tl, important);
+            ncss_add_decl(rule, NCSS_PROP_FLEX_SHRINK, "1", 1, important);
+            ncss_add_decl(rule, NCSS_PROP_FLEX_BASIS, "0", 1, important);
+        } else if (n >= 3) {
+            /* flex: <grow> <shrink> <basis> */
+            char tmp[32];
+            uint32_t tl;
+
+            tl = lens[0] < 31 ? lens[0] : 31;
+            memcpy(tmp, toks[0], tl); tmp[tl] = '\0';
+            ncss_add_decl(rule, NCSS_PROP_FLEX_GROW, tmp, tl, important);
+
+            tl = lens[1] < 31 ? lens[1] : 31;
+            memcpy(tmp, toks[1], tl); tmp[tl] = '\0';
+            ncss_add_decl(rule, NCSS_PROP_FLEX_SHRINK, tmp, tl, important);
+
+            tl = lens[2] < 31 ? lens[2] : 31;
+            memcpy(tmp, toks[2], tl); tmp[tl] = '\0';
+            ncss_add_decl(rule, NCSS_PROP_FLEX_BASIS, tmp, tl, important);
+        }
+        return true;
+    }
+
+    return false; /* not a recognized shorthand */
+}
+
+
+/* =========================================================================
  * Section 6: CSS Stylesheet Parsing
  * ========================================================================= */
 
@@ -1098,24 +1523,20 @@ static const char *ncss_parse_declarations(const char *p, R8EUICSSRule *rule) {
             memcpy(prop_buf, prop_start, copy_len);
             prop_buf[copy_len] = '\0';
 
+            /* Copy value into a buffer */
+            uint32_t val_len = (uint32_t)(val_end - val_start);
+            char val_buf[256];
+            uint32_t vbuf_len = val_len < 255 ? val_len : 255;
+            memcpy(val_buf, val_start, vbuf_len);
+            val_buf[vbuf_len] = '\0';
+
             int prop_id = ncss_lookup_property(prop_buf, (uint32_t)copy_len);
             if (prop_id >= 0) {
-                if (!ncss_decl_grow(rule)) { if (*p == ';') p++; continue; }
-
-                R8EUICSSDecl *decl = &rule->declarations[rule->decl_count];
-                decl->property = (R8EUICSSPropertyID)prop_id;
-                decl->important = important;
-
-                uint32_t val_len = (uint32_t)(val_end - val_start);
-                decl->value = (char *)malloc(val_len + 1);
-                if (decl->value) {
-                    memcpy(decl->value, val_start, val_len);
-                    decl->value[val_len] = '\0';
-                    decl->value_len = (uint16_t)val_len;
-                } else {
-                    decl->value_len = 0;
-                }
-                rule->decl_count++;
+                ncss_add_decl(rule, (R8EUICSSPropertyID)prop_id,
+                              val_buf, vbuf_len, important);
+            } else {
+                /* Try shorthand expansion */
+                ncss_expand_shorthand(rule, prop_buf, val_buf, important);
             }
         }
 
@@ -1181,6 +1602,16 @@ void r8e_ui_stylesheet_parse(R8EUIStyleSheet *sheet, const char *css) {
             sel_end--;
 
         p++; /* skip '{' */
+
+        /* Check for :root selector - extract CSS custom properties */
+        {
+            uint32_t sel_len = (uint32_t)(sel_end - sel_start);
+            if (sel_len == 5 && memcmp(sel_start, ":root", 5) == 0) {
+                /* Store --* properties as CSS variables */
+                ncss_store_root_variables(p);
+                /* Still parse declarations normally (skip the block) */
+            }
+        }
 
         /* Parse declarations into a temporary rule */
         R8EUICSSRule temp_rule;
@@ -1397,7 +1828,8 @@ static void ncss_apply_declaration(R8EUIComputedStyle *style,
                                    float base_font_size) {
     if (!style || !decl || !decl->value) return;
 
-    const char *v = decl->value;
+    /* Resolve var() references before applying */
+    const char *v = ncss_resolve_var(decl->value, 0);
 
     switch (decl->property) {
 
@@ -1565,10 +1997,88 @@ static void ncss_apply_declaration(R8EUIComputedStyle *style,
         else if (strcmp(v, "none") == 0)    style->cursor = NCSS_CURSOR_NONE;
         break;
 
-    /* -- Box shadow (basic: store raw value for paint layer) -- */
-    case NCSS_PROP_BOX_SHADOW:
-        /* Box shadow is complex; store the atom for the paint layer to parse */
+    /* -- Box shadow (basic: x-offset y-offset blur [spread] color) -- */
+    case NCSS_PROP_BOX_SHADOW: {
+        if (strcmp(v, "none") == 0) {
+            style->has_shadow = false;
+            style->shadow_x = 0;
+            style->shadow_y = 0;
+            style->shadow_blur = 0;
+            style->shadow_spread = 0;
+            style->shadow_color = 0x00000000u;
+            break;
+        }
+        /* Skip optional 'inset' keyword */
+        const char *sv = v;
+        if (strncmp(sv, "inset", 5) == 0) {
+            sv += 5;
+            while (*sv == ' ' || *sv == '\t') sv++;
+        }
+
+        /* Helper: skip past optional CSS unit suffix (px, em, rem, pt, %) */
+        #define SKIP_UNIT(p) do { \
+            if (strncmp(p, "px", 2) == 0) p += 2; \
+            else if (strncmp(p, "rem", 3) == 0) p += 3; \
+            else if (strncmp(p, "em", 2) == 0) p += 2; \
+            else if (strncmp(p, "pt", 2) == 0) p += 2; \
+            else if (*p == '%') p++; \
+        } while (0)
+
+        /* Parse: x-offset y-offset [blur [spread]] color */
+        char *endp;
+        float sx = strtof(sv, &endp);
+        if (endp == sv) break;
+        sv = endp; SKIP_UNIT(sv);
+        while (*sv == ' ' || *sv == '\t') sv++;
+
+        float sy = strtof(sv, &endp);
+        if (endp == sv) break;
+        sv = endp; SKIP_UNIT(sv);
+        while (*sv == ' ' || *sv == '\t') sv++;
+
+        /* Optional blur radius */
+        float sblur = 0.0f;
+        float spread = 0.0f;
+        /* Only try parsing a number if the next char could start a number */
+        if (*sv && *sv != '#' && (*sv == '-' || *sv == '+' || *sv == '.' ||
+            (*sv >= '0' && *sv <= '9'))) {
+            char *endp2;
+            float maybe_blur = strtof(sv, &endp2);
+            if (endp2 != sv) {
+                sblur = maybe_blur;
+                sv = endp2; SKIP_UNIT(sv);
+                while (*sv == ' ' || *sv == '\t') sv++;
+
+                /* Optional spread radius */
+                if (*sv && *sv != '#' && (*sv == '-' || *sv == '+' || *sv == '.' ||
+                    (*sv >= '0' && *sv <= '9'))) {
+                    char *endp3;
+                    float maybe_spread = strtof(sv, &endp3);
+                    if (endp3 != sv) {
+                        spread = maybe_spread;
+                        sv = endp3; SKIP_UNIT(sv);
+                        while (*sv == ' ' || *sv == '\t') sv++;
+                    }
+                }
+            }
+        }
+
+        #undef SKIP_UNIT
+
+        /* Remaining is the color */
+        uint32_t scolor = 0x00000000u;
+        if (*sv) {
+            scolor = ncss_parse_color(sv);
+        }
+
+        style->shadow_x = sx;
+        style->shadow_y = sy;
+        style->shadow_blur = sblur;
+        style->shadow_spread = spread;
+        style->shadow_color = scolor;
+        style->has_shadow = true;
         break;
+    }
 
     /* -- Positioning offsets -- */
     case NCSS_PROP_TOP:    style->top = ncss_parse_length(v, base_font_size); break;

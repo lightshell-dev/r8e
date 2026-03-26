@@ -73,6 +73,7 @@ typedef enum {
     DL_PUSH_OPACITY,
     DL_POP_OPACITY,
     DL_FILL_PATH,
+    DL_BOX_SHADOW,
 } DisplayCommandType;
 
 typedef struct {
@@ -86,6 +87,7 @@ typedef struct {
         struct { float x, y, w, h; } clip;
         struct { float alpha; } opacity;
         struct { R8EPathCommand *commands; uint32_t count; uint32_t color; } fill_path;
+        struct { float x, y, w, h; float offset_x, offset_y, blur; uint32_t color; float border_radius; } box_shadow;
     };
 } DisplayCommand;
 
@@ -119,6 +121,9 @@ void r8e_dl_push_opacity(DisplayList *dl, float alpha);
 void r8e_dl_pop_opacity(DisplayList *dl);
 void r8e_dl_push_fill_path(DisplayList *dl, R8EPathCommand *commands,
                            uint32_t count, uint32_t color);
+void r8e_dl_push_box_shadow(DisplayList *dl, float x, float y, float w, float h,
+                             float offset_x, float offset_y, float blur,
+                             uint32_t color, float border_radius);
 
 /* Arena-allocated helpers */
 R8EGlyphRun *r8e_dl_arena_alloc_glyph_run(DisplayList *dl, uint32_t glyph_count,
