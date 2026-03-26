@@ -914,3 +914,6 @@ WEAK void r8e_sample_top_k(float *logits, int vocab_size, int k) {
 WEAK void r8e_sample_top_p(float *logits, int vocab_size, float p) {
     (void)logits; (void)vocab_size; (void)p;
 }
+
+/* CSS shorthand tests (stub until implemented) */
+WEAK void run_css_shorthand_tests(void) { }

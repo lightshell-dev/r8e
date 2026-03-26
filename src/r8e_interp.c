@@ -1454,8 +1454,9 @@ static struct {
     uint32_t indexOf, includes, join, reverse, sort, slice, splice;
     uint32_t split, concat, trim, trimStart, trimEnd;
     uint32_t startsWith, endsWith, repeat, padStart, padEnd;
-    uint32_t substring, charAt, charCodeAt, replace;
+    uint32_t substring, charAt, charCodeAt, replace, replaceAll;
     uint32_t toLowerCase, toUpperCase;
+    uint32_t findIndex, some, every, flat;
     uint32_t test, exec;
     uint32_t then, catch_a, finally_a, resolve, reject;
     uint32_t stringify, parse;
@@ -1490,8 +1491,13 @@ static void ensure_method_atoms(void) {
     g_method_atoms.substring = r8e_atom_intern_cstr(NULL, "substring");
     g_method_atoms.charAt = r8e_atom_intern_cstr(NULL, "charAt");
     g_method_atoms.replace = r8e_atom_intern_cstr(NULL, "replace");
+    g_method_atoms.replaceAll = r8e_atom_intern_cstr(NULL, "replaceAll");
     g_method_atoms.toLowerCase = r8e_atom_intern_cstr(NULL, "toLowerCase");
     g_method_atoms.toUpperCase = r8e_atom_intern_cstr(NULL, "toUpperCase");
+    g_method_atoms.findIndex = r8e_atom_intern_cstr(NULL, "findIndex");
+    g_method_atoms.some = r8e_atom_intern_cstr(NULL, "some");
+    g_method_atoms.every = r8e_atom_intern_cstr(NULL, "every");
+    g_method_atoms.flat = r8e_atom_intern_cstr(NULL, "flat");
     g_method_atoms.test = r8e_atom_intern_cstr(NULL, "test");
     g_method_atoms.exec = r8e_atom_intern_cstr(NULL, "exec");
     g_method_atoms.then = r8e_atom_intern_cstr(NULL, "then");
@@ -1596,6 +1602,285 @@ static bool r8e_interp_builtin_method(R8EInterpContext *ctx,
                 }
             }
             *out_result = r8e_interp_from_pointer(arr);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.startsWith) {
+            if (argc < 1) { *out_result = R8E_FALSE; return true; }
+            char nbuf[8]; uint32_t nlen;
+            const char *needle = r8e_interp_get_string(argv[0], nbuf, &nlen);
+            if (nlen == 0) { *out_result = R8E_TRUE; return true; }
+            if (nlen > slen) { *out_result = R8E_FALSE; return true; }
+            *out_result = (memcmp(sdata, needle, nlen) == 0) ? R8E_TRUE : R8E_FALSE;
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.endsWith) {
+            if (argc < 1) { *out_result = R8E_FALSE; return true; }
+            char nbuf[8]; uint32_t nlen;
+            const char *needle = r8e_interp_get_string(argv[0], nbuf, &nlen);
+            if (nlen == 0) { *out_result = R8E_TRUE; return true; }
+            if (nlen > slen) { *out_result = R8E_FALSE; return true; }
+            *out_result = (memcmp(sdata + slen - nlen, needle, nlen) == 0)
+                         ? R8E_TRUE : R8E_FALSE;
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.trim) {
+            uint32_t start = 0, end = slen;
+            while (start < end && (sdata[start] == ' ' || sdata[start] == '\t' ||
+                   sdata[start] == '\n' || sdata[start] == '\r')) start++;
+            while (end > start && (sdata[end-1] == ' ' || sdata[end-1] == '\t' ||
+                   sdata[end-1] == '\n' || sdata[end-1] == '\r')) end--;
+            *out_result = r8e_interp_make_string(sdata + start, end - start);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.trimStart) {
+            uint32_t start = 0;
+            while (start < slen && (sdata[start] == ' ' || sdata[start] == '\t' ||
+                   sdata[start] == '\n' || sdata[start] == '\r')) start++;
+            *out_result = r8e_interp_make_string(sdata + start, slen - start);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.trimEnd) {
+            uint32_t end = slen;
+            while (end > 0 && (sdata[end-1] == ' ' || sdata[end-1] == '\t' ||
+                   sdata[end-1] == '\n' || sdata[end-1] == '\r')) end--;
+            *out_result = r8e_interp_make_string(sdata, end);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.toLowerCase) {
+            char *buf2 = (char *)malloc(slen + 1);
+            if (!buf2) { *out_result = R8E_UNDEFINED; return true; }
+            for (uint32_t i = 0; i < slen; i++) {
+                buf2[i] = (sdata[i] >= 'A' && sdata[i] <= 'Z')
+                         ? sdata[i] + 32 : sdata[i];
+            }
+            buf2[slen] = '\0';
+            *out_result = r8e_interp_make_string(buf2, slen);
+            free(buf2);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.toUpperCase) {
+            char *buf2 = (char *)malloc(slen + 1);
+            if (!buf2) { *out_result = R8E_UNDEFINED; return true; }
+            for (uint32_t i = 0; i < slen; i++) {
+                buf2[i] = (sdata[i] >= 'a' && sdata[i] <= 'z')
+                         ? sdata[i] - 32 : sdata[i];
+            }
+            buf2[slen] = '\0';
+            *out_result = r8e_interp_make_string(buf2, slen);
+            free(buf2);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.substring) {
+            int32_t start = 0, end = (int32_t)slen;
+            if (argc >= 1) {
+                if (R8E_IS_INT32(argv[0])) start = r8e_interp_get_int32(argv[0]);
+                else if (R8E_IS_DOUBLE(argv[0])) {
+                    double d; memcpy(&d, &argv[0], 8);
+                    start = (int32_t)d;
+                }
+            }
+            if (argc >= 2) {
+                if (R8E_IS_INT32(argv[1])) end = r8e_interp_get_int32(argv[1]);
+                else if (R8E_IS_DOUBLE(argv[1])) {
+                    double d; memcpy(&d, &argv[1], 8);
+                    end = (int32_t)d;
+                }
+            }
+            if (start < 0) start = 0;
+            if (end < 0) end = 0;
+            if (start > (int32_t)slen) start = (int32_t)slen;
+            if (end > (int32_t)slen) end = (int32_t)slen;
+            if (start > end) { int32_t t = start; start = end; end = t; }
+            *out_result = r8e_interp_make_string(sdata + start,
+                                                  (uint32_t)(end - start));
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.charAt) {
+            if (argc < 1) {
+                *out_result = r8e_interp_make_string(slen > 0 ? sdata : "", slen > 0 ? 1 : 0);
+                return true;
+            }
+            int32_t idx = 0;
+            if (R8E_IS_INT32(argv[0])) idx = r8e_interp_get_int32(argv[0]);
+            else if (R8E_IS_DOUBLE(argv[0])) {
+                double d; memcpy(&d, &argv[0], 8);
+                idx = (int32_t)d;
+            }
+            if (idx < 0 || idx >= (int32_t)slen) {
+                *out_result = r8e_interp_make_string("", 0);
+            } else {
+                *out_result = r8e_interp_make_string(sdata + idx, 1);
+            }
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.replace) {
+            if (argc < 2) { *out_result = this_val; return true; }
+            char nbuf[8]; uint32_t nlen;
+            const char *needle = r8e_interp_get_string(argv[0], nbuf, &nlen);
+            char rbuf[8]; uint32_t rlen;
+            const char *repl = r8e_interp_get_string(argv[1], rbuf, &rlen);
+            /* Find first occurrence */
+            if (nlen == 0 || nlen > slen) {
+                /* Empty needle: prepend replacement */
+                if (nlen == 0) {
+                    uint32_t new_len = rlen + slen;
+                    char *buf2 = (char *)malloc(new_len + 1);
+                    if (!buf2) { *out_result = this_val; return true; }
+                    memcpy(buf2, repl, rlen);
+                    memcpy(buf2 + rlen, sdata, slen);
+                    buf2[new_len] = '\0';
+                    *out_result = r8e_interp_make_string(buf2, new_len);
+                    free(buf2);
+                } else {
+                    *out_result = this_val;
+                }
+                return true;
+            }
+            for (uint32_t i = 0; i <= slen - nlen; i++) {
+                if (memcmp(sdata + i, needle, nlen) == 0) {
+                    uint32_t new_len = slen - nlen + rlen;
+                    char *buf2 = (char *)malloc(new_len + 1);
+                    if (!buf2) { *out_result = this_val; return true; }
+                    memcpy(buf2, sdata, i);
+                    memcpy(buf2 + i, repl, rlen);
+                    memcpy(buf2 + i + rlen, sdata + i + nlen, slen - i - nlen);
+                    buf2[new_len] = '\0';
+                    *out_result = r8e_interp_make_string(buf2, new_len);
+                    free(buf2);
+                    return true;
+                }
+            }
+            *out_result = this_val;
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.replaceAll) {
+            if (argc < 2) { *out_result = this_val; return true; }
+            char nbuf[8]; uint32_t nlen;
+            const char *needle = r8e_interp_get_string(argv[0], nbuf, &nlen);
+            char rbuf[8]; uint32_t rlen;
+            const char *repl = r8e_interp_get_string(argv[1], rbuf, &rlen);
+            if (nlen == 0) { *out_result = this_val; return true; }
+            /* Count occurrences */
+            uint32_t count = 0;
+            for (uint32_t i = 0; i <= slen - nlen; i++) {
+                if (memcmp(sdata + i, needle, nlen) == 0) {
+                    count++; i += nlen - 1;
+                }
+            }
+            if (count == 0) { *out_result = this_val; return true; }
+            uint32_t new_len = slen + count * (rlen - nlen);
+            char *buf2 = (char *)malloc(new_len + 1);
+            if (!buf2) { *out_result = this_val; return true; }
+            uint32_t pos = 0, wp = 0;
+            while (pos <= slen - nlen) {
+                if (memcmp(sdata + pos, needle, nlen) == 0) {
+                    memcpy(buf2 + wp, repl, rlen);
+                    wp += rlen; pos += nlen;
+                } else {
+                    buf2[wp++] = sdata[pos++];
+                }
+            }
+            while (pos < slen) buf2[wp++] = sdata[pos++];
+            buf2[new_len] = '\0';
+            *out_result = r8e_interp_make_string(buf2, new_len);
+            free(buf2);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.repeat) {
+            int32_t count = 0;
+            if (argc >= 1) {
+                if (R8E_IS_INT32(argv[0])) count = r8e_interp_get_int32(argv[0]);
+                else if (R8E_IS_DOUBLE(argv[0])) {
+                    double d; memcpy(&d, &argv[0], 8);
+                    count = (int32_t)d;
+                }
+            }
+            if (count <= 0 || slen == 0) {
+                *out_result = r8e_interp_make_string("", 0);
+                return true;
+            }
+            uint32_t new_len = slen * (uint32_t)count;
+            char *buf2 = (char *)malloc(new_len + 1);
+            if (!buf2) { *out_result = R8E_UNDEFINED; return true; }
+            for (int32_t i = 0; i < count; i++)
+                memcpy(buf2 + i * slen, sdata, slen);
+            buf2[new_len] = '\0';
+            *out_result = r8e_interp_make_string(buf2, new_len);
+            free(buf2);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.padStart) {
+            int32_t target_len = 0;
+            if (argc >= 1) {
+                if (R8E_IS_INT32(argv[0])) target_len = r8e_interp_get_int32(argv[0]);
+                else if (R8E_IS_DOUBLE(argv[0])) {
+                    double d; memcpy(&d, &argv[0], 8);
+                    target_len = (int32_t)d;
+                }
+            }
+            if (target_len <= (int32_t)slen) {
+                *out_result = this_val; return true;
+            }
+            const char *fill = " "; uint32_t flen = 1;
+            char fbuf[8]; uint32_t flen2;
+            if (argc >= 2 && r8e_is_string_val(argv[1])) {
+                fill = r8e_interp_get_string(argv[1], fbuf, &flen2);
+                flen = flen2;
+            }
+            if (flen == 0) { *out_result = this_val; return true; }
+            uint32_t pad_len = (uint32_t)target_len - slen;
+            char *buf2 = (char *)malloc((uint32_t)target_len + 1);
+            if (!buf2) { *out_result = this_val; return true; }
+            for (uint32_t i = 0; i < pad_len; i++)
+                buf2[i] = fill[i % flen];
+            memcpy(buf2 + pad_len, sdata, slen);
+            buf2[target_len] = '\0';
+            *out_result = r8e_interp_make_string(buf2, (uint32_t)target_len);
+            free(buf2);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.padEnd) {
+            int32_t target_len = 0;
+            if (argc >= 1) {
+                if (R8E_IS_INT32(argv[0])) target_len = r8e_interp_get_int32(argv[0]);
+                else if (R8E_IS_DOUBLE(argv[0])) {
+                    double d; memcpy(&d, &argv[0], 8);
+                    target_len = (int32_t)d;
+                }
+            }
+            if (target_len <= (int32_t)slen) {
+                *out_result = this_val; return true;
+            }
+            const char *fill = " "; uint32_t flen = 1;
+            char fbuf[8]; uint32_t flen2;
+            if (argc >= 2 && r8e_is_string_val(argv[1])) {
+                fill = r8e_interp_get_string(argv[1], fbuf, &flen2);
+                flen = flen2;
+            }
+            if (flen == 0) { *out_result = this_val; return true; }
+            uint32_t pad_len = (uint32_t)target_len - slen;
+            char *buf2 = (char *)malloc((uint32_t)target_len + 1);
+            if (!buf2) { *out_result = this_val; return true; }
+            memcpy(buf2, sdata, slen);
+            for (uint32_t i = 0; i < pad_len; i++)
+                buf2[slen + i] = fill[i % flen];
+            buf2[target_len] = '\0';
+            *out_result = r8e_interp_make_string(buf2, (uint32_t)target_len);
+            free(buf2);
             return true;
         }
 
@@ -1923,6 +2208,219 @@ static bool r8e_interp_builtin_method(R8EInterpContext *ctx,
                 res->elements[idx++] = argv[i];
             }
             res->length = idx;
+            *out_result = r8e_interp_from_pointer(res);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.findIndex) {
+            if (argc < 1 || !r8e_is_callable(argv[0])) {
+                *out_result = r8e_interp_from_int32(-1);
+                return true;
+            }
+            for (uint32_t i = 0; i < arr->length; i++) {
+                R8EValue cb_args[3];
+                cb_args[0] = arr->elements[i];
+                cb_args[1] = r8e_interp_from_int32((int32_t)i);
+                cb_args[2] = this_val;
+                R8EValue ret = r8e_interp_call_internal(ctx, argv[0],
+                    R8E_UNDEFINED, cb_args, 3, false);
+                if (ctx->has_exception) { *out_result = R8E_UNDEFINED; return true; }
+                if (r8e_is_truthy(ret)) {
+                    *out_result = r8e_interp_from_int32((int32_t)i);
+                    return true;
+                }
+            }
+            *out_result = r8e_interp_from_int32(-1);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.some) {
+            if (argc < 1 || !r8e_is_callable(argv[0])) {
+                *out_result = R8E_FALSE;
+                return true;
+            }
+            for (uint32_t i = 0; i < arr->length; i++) {
+                R8EValue cb_args[3];
+                cb_args[0] = arr->elements[i];
+                cb_args[1] = r8e_interp_from_int32((int32_t)i);
+                cb_args[2] = this_val;
+                R8EValue ret = r8e_interp_call_internal(ctx, argv[0],
+                    R8E_UNDEFINED, cb_args, 3, false);
+                if (ctx->has_exception) { *out_result = R8E_UNDEFINED; return true; }
+                if (r8e_is_truthy(ret)) {
+                    *out_result = R8E_TRUE;
+                    return true;
+                }
+            }
+            *out_result = R8E_FALSE;
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.every) {
+            if (argc < 1 || !r8e_is_callable(argv[0])) {
+                *out_result = R8E_TRUE;
+                return true;
+            }
+            for (uint32_t i = 0; i < arr->length; i++) {
+                R8EValue cb_args[3];
+                cb_args[0] = arr->elements[i];
+                cb_args[1] = r8e_interp_from_int32((int32_t)i);
+                cb_args[2] = this_val;
+                R8EValue ret = r8e_interp_call_internal(ctx, argv[0],
+                    R8E_UNDEFINED, cb_args, 3, false);
+                if (ctx->has_exception) { *out_result = R8E_UNDEFINED; return true; }
+                if (!r8e_is_truthy(ret)) {
+                    *out_result = R8E_FALSE;
+                    return true;
+                }
+            }
+            *out_result = R8E_TRUE;
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.flat) {
+            /* Flatten one level */
+            uint32_t total = 0;
+            for (uint32_t i = 0; i < arr->length; i++) {
+                if (R8E_IS_POINTER(arr->elements[i])) {
+                    void *ep = r8e_interp_get_pointer(arr->elements[i]);
+                    if (ep && R8E_GC_GET_KIND(((R8EGCHeader *)ep)->flags) == R8E_GC_KIND_ARRAY) {
+                        total += ((R8EArrayInterp *)ep)->length;
+                        continue;
+                    }
+                }
+                total++;
+            }
+            R8EArrayInterp *res = (R8EArrayInterp *)calloc(1, sizeof(R8EArrayInterp));
+            if (!res) { *out_result = R8E_UNDEFINED; return true; }
+            res->flags = (R8E_GC_KIND_ARRAY << R8E_GC_KIND_SHIFT);
+            res->proto_id = 2;
+            res->capacity = total > 0 ? total : 1;
+            res->elements = (R8EValue *)calloc(res->capacity, sizeof(R8EValue));
+            uint32_t idx = 0;
+            for (uint32_t i = 0; i < arr->length; i++) {
+                if (R8E_IS_POINTER(arr->elements[i])) {
+                    void *ep = r8e_interp_get_pointer(arr->elements[i]);
+                    if (ep && R8E_GC_GET_KIND(((R8EGCHeader *)ep)->flags) == R8E_GC_KIND_ARRAY) {
+                        R8EArrayInterp *sub = (R8EArrayInterp *)ep;
+                        for (uint32_t j = 0; j < sub->length; j++)
+                            res->elements[idx++] = sub->elements[j];
+                        continue;
+                    }
+                }
+                res->elements[idx++] = arr->elements[i];
+            }
+            res->length = idx;
+            *out_result = r8e_interp_from_pointer(res);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.sort) {
+            /* Simple insertion sort - works for small arrays */
+            if (argc >= 1 && r8e_is_callable(argv[0])) {
+                /* Sort with compare function */
+                for (uint32_t i = 1; i < arr->length; i++) {
+                    R8EValue key_val = arr->elements[i];
+                    int32_t j = (int32_t)i - 1;
+                    while (j >= 0) {
+                        R8EValue cb_args[2];
+                        cb_args[0] = arr->elements[j];
+                        cb_args[1] = key_val;
+                        R8EValue cmp = r8e_interp_call_internal(ctx, argv[0],
+                            R8E_UNDEFINED, cb_args, 2, false);
+                        if (ctx->has_exception) { *out_result = R8E_UNDEFINED; return true; }
+                        double d = 0;
+                        if (R8E_IS_INT32(cmp)) d = (double)r8e_interp_get_int32(cmp);
+                        else if (R8E_IS_DOUBLE(cmp)) { memcpy(&d, &cmp, 8); }
+                        if (d <= 0) break;
+                        arr->elements[j + 1] = arr->elements[j];
+                        j--;
+                    }
+                    arr->elements[j + 1] = key_val;
+                }
+            } else {
+                /* Default: convert to string and sort lexicographically */
+                for (uint32_t i = 1; i < arr->length; i++) {
+                    R8EValue key_val = arr->elements[i];
+                    char kbuf[8]; uint32_t klen;
+                    const char *ks = r8e_interp_get_string(key_val, kbuf, &klen);
+                    int32_t j = (int32_t)i - 1;
+                    while (j >= 0) {
+                        char jbuf[8]; uint32_t jlen;
+                        const char *js = r8e_interp_get_string(arr->elements[j], jbuf, &jlen);
+                        uint32_t min_len = jlen < klen ? jlen : klen;
+                        int cmp = memcmp(js, ks, min_len);
+                        if (cmp == 0) cmp = (jlen > klen) - (jlen < klen);
+                        if (cmp <= 0) break;
+                        arr->elements[j + 1] = arr->elements[j];
+                        j--;
+                    }
+                    arr->elements[j + 1] = key_val;
+                }
+            }
+            *out_result = this_val;
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.splice) {
+            int32_t start = 0;
+            int32_t delete_count = 0;
+            if (argc >= 1) {
+                if (R8E_IS_INT32(argv[0])) start = r8e_interp_get_int32(argv[0]);
+                else if (R8E_IS_DOUBLE(argv[0])) {
+                    double d; memcpy(&d, &argv[0], 8);
+                    start = (int32_t)d;
+                }
+            }
+            if (start < 0) start += (int32_t)arr->length;
+            if (start < 0) start = 0;
+            if (start > (int32_t)arr->length) start = (int32_t)arr->length;
+            if (argc >= 2) {
+                if (R8E_IS_INT32(argv[1])) delete_count = r8e_interp_get_int32(argv[1]);
+                else if (R8E_IS_DOUBLE(argv[1])) {
+                    double d; memcpy(&d, &argv[1], 8);
+                    delete_count = (int32_t)d;
+                }
+            } else {
+                delete_count = (int32_t)arr->length - start;
+            }
+            if (delete_count < 0) delete_count = 0;
+            if (start + delete_count > (int32_t)arr->length)
+                delete_count = (int32_t)arr->length - start;
+            int insert_count = argc > 2 ? argc - 2 : 0;
+            /* Build result array of deleted elements */
+            R8EArrayInterp *res = (R8EArrayInterp *)calloc(1, sizeof(R8EArrayInterp));
+            if (!res) { *out_result = R8E_UNDEFINED; return true; }
+            res->flags = (R8E_GC_KIND_ARRAY << R8E_GC_KIND_SHIFT);
+            res->proto_id = 2;
+            res->length = (uint32_t)delete_count;
+            res->capacity = delete_count > 0 ? (uint32_t)delete_count : 1;
+            res->elements = (R8EValue *)calloc(res->capacity, sizeof(R8EValue));
+            for (int32_t i = 0; i < delete_count; i++)
+                res->elements[i] = arr->elements[start + i];
+            /* Adjust array in place */
+            int32_t diff = insert_count - delete_count;
+            uint32_t new_len = (uint32_t)((int32_t)arr->length + diff);
+            if (new_len > arr->capacity) {
+                uint32_t new_cap = new_len * 2;
+                R8EValue *new_el = (R8EValue *)realloc(arr->elements,
+                    new_cap * sizeof(R8EValue));
+                if (!new_el) { *out_result = r8e_interp_from_pointer(res); return true; }
+                arr->elements = new_el;
+                arr->capacity = new_cap;
+            }
+            if (diff != 0) {
+                /* Move tail elements */
+                uint32_t tail_start = (uint32_t)(start + delete_count);
+                uint32_t tail_len = arr->length - tail_start;
+                memmove(arr->elements + start + insert_count,
+                        arr->elements + tail_start,
+                        tail_len * sizeof(R8EValue));
+            }
+            /* Insert new elements */
+            for (int i = 0; i < insert_count; i++)
+                arr->elements[start + i] = argv[2 + i];
+            arr->length = new_len;
             *out_result = r8e_interp_from_pointer(res);
             return true;
         }

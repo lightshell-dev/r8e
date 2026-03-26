@@ -163,6 +163,567 @@ static R8EValue api_set_constructor(R8EContext *ctx, R8EValue this_val,
     return r8e_set_new(ctx);
 }
 
+/* =========================================================================
+ * Object/Array static methods & global functions for Svelte support
+ *
+ * These native callbacks receive R8EInterpContext* disguised as R8EContext*.
+ * They must NOT use R8EContext-specific fields; work only with NaN-boxed values.
+ * ========================================================================= */
+
+/* Forward declare atom-to-string lookup */
+extern const char *r8e_atom_get_str(void *ctx, uint32_t atom, uint32_t *out_len);
+
+/* Forward declare types used by builtin implementations */
+typedef struct { R8EValue key; R8EValue val; } ApiPropPairFwd;
+
+typedef struct {
+    uint32_t flags;
+    uint32_t proto_id;
+    R8EValue key0;
+    R8EValue val0;
+} ApiObjTier0Fwd;
+
+typedef struct {
+    uint32_t  flags;
+    uint32_t  proto_id;
+    uint8_t   count;
+    uint8_t   pad[7];
+    ApiPropPairFwd props[4];
+} ApiObjTier1Fwd;
+
+typedef struct {
+    uint32_t  flags;
+    uint32_t  proto_id;
+    uint8_t   count;
+    uint8_t   capacity;
+    uint8_t   pad[6];
+    ApiPropPairFwd *props;
+} ApiObjTier2Fwd;
+
+typedef struct {
+    uint32_t  flags;
+    uint32_t  proto_id;
+    uint32_t  length;
+    uint32_t  capacity;
+    R8EValue *elements;
+    void     *named;
+} ApiArrayInterpFwd;
+
+/* Helper: get string data from an R8EValue (inline or heap) */
+static const char *api_get_string(R8EValue v, char *buf, uint32_t *out_len) {
+    if (R8E_IS_INLINE_STR(v)) {
+        int len = r8e_inline_str_len(v);
+        r8e_inline_str_decode(v, buf);
+        *out_len = (uint32_t)len;
+        return buf;
+    }
+    if (((v) >> 48) == 0xFFFCU) { /* atom */
+        uint32_t atom_id = (uint32_t)(v & 0xFFFFFFFFULL);
+        const char *s = r8e_atom_get_str(NULL, atom_id, out_len);
+        if (s) return s;
+    }
+    if (R8E_IS_POINTER(v)) {
+        void *ptr = r8e_get_pointer(v);
+        if (ptr) {
+            uint32_t flags = *(uint32_t *)ptr;
+            uint8_t kind = (flags >> 5) & 0x7;
+            if (kind == 1) { /* STRING */
+                uint32_t *words = (uint32_t *)ptr;
+                *out_len = words[2]; /* byte_length */
+                /* Data follows the struct: flags(4) + hash(4) + byte_length(4) +
+                   char_length(4) + offset_table_ptr(8) = 24 bytes */
+                return (const char *)ptr + 24;
+            }
+        }
+    }
+    *out_len = 0;
+    return "";
+}
+
+/* Helper: make an interp-compatible string value */
+static R8EValue api_make_string(const char *data, uint32_t len) {
+    /* Try inline (0-6 ASCII chars) */
+    if (len <= 6) {
+        bool all_ascii = true;
+        for (uint32_t i = 0; i < len; i++) {
+            if ((uint8_t)data[i] > 127) { all_ascii = false; break; }
+        }
+        if (all_ascii) {
+            uint64_t v = 0xFFFD000000000000ULL;
+            v |= ((uint64_t)len << 45);
+            for (uint32_t i = 0; i < len; i++)
+                v |= ((uint64_t)(uint8_t)data[i] << (38 - i * 7));
+            return v;
+        }
+    }
+    /* Heap string: flags(4) + hash(4) + byte_length(4) + char_length(4) +
+       offset_table_ptr(8) + data */
+    size_t hdr_size = 24;
+    void *s = calloc(1, hdr_size + len + 1);
+    if (!s) return R8E_UNDEFINED;
+    uint32_t *words = (uint32_t *)s;
+    words[0] = (1u << 5); /* kind = STRING */
+    words[1] = 0; /* hash */
+    words[2] = len; /* byte_length */
+    words[3] = len; /* char_length (ASCII assumption) */
+    /* offset_table pointer at offset 16 = NULL */
+    memcpy((char *)s + hdr_size, data, len);
+    ((char *)s)[hdr_size + len] = '\0';
+    return r8e_from_pointer(s);
+}
+
+/* Helper: create an interp-compatible array */
+static R8EValue api_make_interp_arr(uint32_t cap) {
+    if (cap == 0) cap = 4;
+    ApiArrayInterpFwd *arr = (ApiArrayInterpFwd *)calloc(1, sizeof(ApiArrayInterpFwd));
+    if (!arr) return R8E_UNDEFINED;
+    arr->flags = (2u << 5); /* ARRAY kind */
+    arr->proto_id = 2;
+    arr->length = 0;
+    arr->capacity = cap;
+    arr->elements = (R8EValue *)calloc(cap, sizeof(R8EValue));
+    if (!arr->elements) { free(arr); return R8E_UNDEFINED; }
+    arr->named = NULL;
+    return r8e_from_pointer(arr);
+}
+
+/* Helper: push element to interp array */
+static void api_array_push(R8EValue arr_val, R8EValue elem) {
+    ApiArrayInterpFwd *arr = (ApiArrayInterpFwd *)r8e_get_pointer(arr_val);
+    if (!arr) return;
+    if (arr->length >= arr->capacity) {
+        uint32_t new_cap = arr->capacity * 2;
+        R8EValue *new_el = (R8EValue *)realloc(arr->elements,
+            new_cap * sizeof(R8EValue));
+        if (!new_el) return;
+        arr->elements = new_el;
+        arr->capacity = new_cap;
+    }
+    arr->elements[arr->length++] = elem;
+}
+
+/* Helper: iterate own properties of an object, calling fn for each key/value */
+typedef void (*api_prop_iter_fn)(uint32_t atom, R8EValue key_tagged,
+                                  R8EValue val, void *userdata);
+
+static void api_iter_own_props(R8EValue obj, api_prop_iter_fn fn, void *ud) {
+    if (!R8E_IS_POINTER(obj)) return;
+    void *ptr = r8e_get_pointer(obj);
+    if (!ptr) return;
+    uint32_t flags = *(uint32_t *)ptr;
+    uint32_t kind = (flags >> 5) & 0x7;
+    if (kind != 0) return; /* not an object */
+    uint8_t tier = flags & 0x03;
+
+    if (tier == 0) {
+        ApiObjTier0Fwd *t0 = (ApiObjTier0Fwd *)ptr;
+        if (t0->key0 != 0) {
+            uint32_t atom = (uint32_t)(t0->key0 & 0xFFFFFFFFULL);
+            fn(atom, t0->key0, t0->val0, ud);
+        }
+    } else if (tier == 1) {
+        ApiObjTier1Fwd *t1 = (ApiObjTier1Fwd *)ptr;
+        for (uint8_t i = 0; i < t1->count; i++) {
+            uint32_t atom = (uint32_t)(t1->props[i].key & 0xFFFFFFFFULL);
+            fn(atom, t1->props[i].key, t1->props[i].val, ud);
+        }
+    } else if (tier == 2) {
+        ApiObjTier2Fwd *t2 = (ApiObjTier2Fwd *)ptr;
+        if (t2->props) {
+            for (uint8_t i = 0; i < t2->count; i++) {
+                uint32_t atom = (uint32_t)(t2->props[i].key & 0xFFFFFFFFULL);
+                fn(atom, t2->props[i].key, t2->props[i].val, ud);
+            }
+        }
+    }
+}
+
+/* Callback for Object.keys: collect key names */
+static void obj_keys_cb(uint32_t atom, R8EValue key_tagged,
+                          R8EValue val, void *ud) {
+    (void)key_tagged; (void)val;
+    R8EValue arr = *(R8EValue *)ud;
+    uint32_t name_len;
+    const char *name = r8e_atom_get_str(NULL, atom, &name_len);
+    if (name) {
+        api_array_push(arr, api_make_string(name, name_len));
+    }
+}
+
+static R8EValue api_object_keys(R8EContext *ctx, R8EValue this_val,
+                                  int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc < 1) return api_make_interp_arr(0);
+    R8EValue target = argv[0];
+    R8EValue result = api_make_interp_arr(8);
+    api_iter_own_props(target, obj_keys_cb, &result);
+    return result;
+}
+
+/* Callback for Object.values */
+static void obj_values_cb(uint32_t atom, R8EValue key_tagged,
+                            R8EValue val, void *ud) {
+    (void)atom; (void)key_tagged;
+    api_array_push(*(R8EValue *)ud, val);
+}
+
+static R8EValue api_object_values(R8EContext *ctx, R8EValue this_val,
+                                    int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc < 1) return api_make_interp_arr(0);
+    R8EValue result = api_make_interp_arr(8);
+    api_iter_own_props(argv[0], obj_values_cb, &result);
+    return result;
+}
+
+/* Callback for Object.entries */
+static void obj_entries_cb(uint32_t atom, R8EValue key_tagged,
+                             R8EValue val, void *ud) {
+    (void)key_tagged;
+    R8EValue arr = *(R8EValue *)ud;
+    uint32_t name_len;
+    const char *name = r8e_atom_get_str(NULL, atom, &name_len);
+    if (name) {
+        R8EValue pair = api_make_interp_arr(2);
+        api_array_push(pair, api_make_string(name, name_len));
+        api_array_push(pair, val);
+        api_array_push(arr, pair);
+    }
+}
+
+static R8EValue api_object_entries(R8EContext *ctx, R8EValue this_val,
+                                     int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc < 1) return api_make_interp_arr(0);
+    R8EValue result = api_make_interp_arr(8);
+    api_iter_own_props(argv[0], obj_entries_cb, &result);
+    return result;
+}
+
+/* Object.assign(target, ...sources) */
+static void obj_assign_cb(uint32_t atom, R8EValue key_tagged,
+                            R8EValue val, void *ud) {
+    R8EValue target = *(R8EValue *)ud;
+    if (!R8E_IS_POINTER(target)) return;
+    void *ptr = r8e_get_pointer(target);
+    if (!ptr) return;
+    uint32_t flags = *(uint32_t *)ptr;
+    uint8_t tier = flags & 0x03;
+
+    if (tier == 0) {
+        ApiObjTier0Fwd *t0 = (ApiObjTier0Fwd *)ptr;
+        if (t0->key0 == key_tagged || t0->key0 == 0) {
+            t0->key0 = key_tagged;
+            t0->val0 = val;
+            return;
+        }
+        /* Need to promote - do simple approach: just skip */
+        return;
+    } else if (tier == 1) {
+        ApiObjTier1Fwd *t1 = (ApiObjTier1Fwd *)ptr;
+        for (uint8_t i = 0; i < t1->count; i++) {
+            if (t1->props[i].key == key_tagged) {
+                t1->props[i].val = val;
+                return;
+            }
+        }
+        if (t1->count < 4) {
+            t1->props[t1->count].key = key_tagged;
+            t1->props[t1->count].val = val;
+            t1->count++;
+            return;
+        }
+        /* Tier 1 full - promote to tier 2 */
+        {
+            uint8_t old_count = t1->count;
+            uint8_t new_cap = 16;
+            ApiPropPairFwd *new_props = (ApiPropPairFwd *)calloc(new_cap, sizeof(ApiPropPairFwd));
+            if (!new_props) return;
+            for (uint8_t i = 0; i < old_count; i++)
+                new_props[i] = t1->props[i];
+            new_props[old_count].key = key_tagged;
+            new_props[old_count].val = val;
+            ApiObjTier2Fwd *t2 = (ApiObjTier2Fwd *)ptr;
+            t2->flags = (0u << 5) | 2u;
+            t2->count = old_count + 1;
+            t2->capacity = new_cap;
+            t2->props = new_props;
+        }
+    } else if (tier == 2) {
+        ApiObjTier2Fwd *t2 = (ApiObjTier2Fwd *)ptr;
+        if (t2->props) {
+            for (uint8_t i = 0; i < t2->count; i++) {
+                if (t2->props[i].key == key_tagged) {
+                    t2->props[i].val = val;
+                    return;
+                }
+            }
+            if (t2->count < t2->capacity) {
+                t2->props[t2->count].key = key_tagged;
+                t2->props[t2->count].val = val;
+                t2->count++;
+            }
+        }
+    }
+    (void)atom;
+}
+
+static R8EValue api_object_assign(R8EContext *ctx, R8EValue this_val,
+                                    int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc < 1) return R8E_UNDEFINED;
+    R8EValue target = argv[0];
+    for (int i = 1; i < argc; i++) {
+        api_iter_own_props(argv[i], obj_assign_cb, &target);
+    }
+    return target;
+}
+
+/* Object.freeze(obj) - set frozen bit */
+static R8EValue api_object_freeze(R8EContext *ctx, R8EValue this_val,
+                                    int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc < 1 || !R8E_IS_POINTER(argv[0])) return argc >= 1 ? argv[0] : R8E_UNDEFINED;
+    void *ptr = r8e_get_pointer(argv[0]);
+    if (ptr) {
+        uint32_t *flags = (uint32_t *)ptr;
+        *flags |= 0x10u; /* frozen bit */
+    }
+    return argv[0];
+}
+
+/* Object.create(proto) */
+static R8EValue api_object_create(R8EContext *ctx, R8EValue this_val,
+                                    int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    /* Create a new empty object; proto linkage is not fully supported
+       but we return a valid object */
+    ApiObjTier1Fwd *obj = (ApiObjTier1Fwd *)calloc(1, sizeof(ApiObjTier1Fwd));
+    if (!obj) return R8E_UNDEFINED;
+    obj->flags = (0u << 5) | 1u; /* kind=OBJECT, tier=1 */
+    obj->proto_id = 1; /* PROTO_OBJECT */
+    obj->count = 0;
+    (void)argc; (void)argv;
+    return r8e_from_pointer(obj);
+}
+
+/* Array.isArray(val) */
+static R8EValue api_array_isArray(R8EContext *ctx, R8EValue this_val,
+                                    int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc < 1) return R8E_FALSE;
+    R8EValue val = argv[0];
+    if (!R8E_IS_POINTER(val)) return R8E_FALSE;
+    void *ptr = r8e_get_pointer(val);
+    if (!ptr) return R8E_FALSE;
+    uint32_t flags = *(uint32_t *)ptr;
+    uint8_t kind = (flags >> 5) & 0x7;
+    return (kind == 2) ? R8E_TRUE : R8E_FALSE; /* 2 = ARRAY */
+}
+
+/* Array.from(iterable) */
+static R8EValue api_array_from(R8EContext *ctx, R8EValue this_val,
+                                 int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc < 1) return api_make_interp_arr(0);
+    R8EValue src = argv[0];
+    /* If already an array, copy it */
+    if (R8E_IS_POINTER(src)) {
+        void *ptr = r8e_get_pointer(src);
+        if (ptr) {
+            uint32_t flags = *(uint32_t *)ptr;
+            uint8_t kind = (flags >> 5) & 0x7;
+            if (kind == 2) { /* ARRAY */
+                ApiArrayInterpFwd *sarr = (ApiArrayInterpFwd *)ptr;
+                R8EValue result = api_make_interp_arr(sarr->length > 0 ? sarr->length : 4);
+                ApiArrayInterpFwd *darr = (ApiArrayInterpFwd *)r8e_get_pointer(result);
+                if (darr) {
+                    for (uint32_t i = 0; i < sarr->length; i++) {
+                        api_array_push(result, sarr->elements[i]);
+                    }
+                }
+                return result;
+            }
+        }
+    }
+    /* If it's a string, convert to array of chars */
+    if (R8E_IS_INLINE_STR(src) || (((src) >> 48) == 0xFFFCU) ||
+        (R8E_IS_POINTER(src) && r8e_get_pointer(src) &&
+         ((*(uint32_t *)r8e_get_pointer(src) >> 5) & 0x7) == 1)) {
+        char sbuf[8]; uint32_t slen;
+        const char *sdata = api_get_string(src, sbuf, &slen);
+        R8EValue result = api_make_interp_arr(slen > 0 ? slen : 4);
+        for (uint32_t i = 0; i < slen; i++) {
+            api_array_push(result, api_make_string(sdata + i, 1));
+        }
+        return result;
+    }
+    return api_make_interp_arr(0);
+}
+
+/* parseInt(str, radix) */
+static R8EValue api_global_parseInt(R8EContext *ctx, R8EValue this_val,
+                                      int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc < 1) return r8e_from_double(NAN);
+    R8EValue val = argv[0];
+    /* If already a number, truncate */
+    if (R8E_IS_INT32(val)) return val;
+    if (R8E_IS_DOUBLE(val)) {
+        double d;
+        memcpy(&d, &val, 8);
+        return r8e_from_int32((int32_t)d);
+    }
+    /* String parsing */
+    char sbuf[8]; uint32_t slen;
+    const char *s = api_get_string(val, sbuf, &slen);
+    if (slen == 0) return r8e_from_double(NAN);
+    /* Skip whitespace */
+    uint32_t i = 0;
+    while (i < slen && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n')) i++;
+    if (i >= slen) return r8e_from_double(NAN);
+    int sign = 1;
+    if (s[i] == '-') { sign = -1; i++; }
+    else if (s[i] == '+') { i++; }
+    int radix = 10;
+    if (argc >= 2 && R8E_IS_INT32(argv[1])) {
+        radix = (int)r8e_get_int32(argv[1]);
+    }
+    if (radix == 0) radix = 10;
+    if (i + 1 < slen && s[i] == '0' && (s[i+1] == 'x' || s[i+1] == 'X') && radix == 16) {
+        i += 2;
+    } else if (i + 1 < slen && s[i] == '0' && (s[i+1] == 'x' || s[i+1] == 'X') && radix == 10) {
+        radix = 16; i += 2;
+    }
+    long result = 0;
+    bool has_digit = false;
+    while (i < slen) {
+        int digit = -1;
+        if (s[i] >= '0' && s[i] <= '9') digit = s[i] - '0';
+        else if (s[i] >= 'a' && s[i] <= 'f') digit = s[i] - 'a' + 10;
+        else if (s[i] >= 'A' && s[i] <= 'F') digit = s[i] - 'A' + 10;
+        if (digit < 0 || digit >= radix) break;
+        result = result * radix + digit;
+        has_digit = true;
+        i++;
+    }
+    if (!has_digit) return r8e_from_double(NAN);
+    return r8e_from_int32((int32_t)(sign * result));
+}
+
+/* parseFloat(str) */
+static R8EValue api_global_parseFloat(R8EContext *ctx, R8EValue this_val,
+                                        int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc < 1) return r8e_from_double(NAN);
+    R8EValue val = argv[0];
+    if (R8E_IS_INT32(val)) return r8e_from_double((double)r8e_get_int32(val));
+    if (R8E_IS_DOUBLE(val)) return val;
+    char sbuf[8]; uint32_t slen;
+    const char *s = api_get_string(val, sbuf, &slen);
+    if (slen == 0) return r8e_from_double(NAN);
+    char *end = NULL;
+    /* Need null-terminated copy for strtod */
+    char tmp[256];
+    uint32_t copy_len = slen < 255 ? slen : 255;
+    memcpy(tmp, s, copy_len);
+    tmp[copy_len] = '\0';
+    double d = strtod(tmp, &end);
+    if (end == tmp) return r8e_from_double(NAN);
+    return r8e_from_double(d);
+}
+
+/* isNaN(val) */
+static R8EValue api_global_isNaN(R8EContext *ctx, R8EValue this_val,
+                                   int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc < 1) return R8E_TRUE;
+    R8EValue val = argv[0];
+    if (R8E_IS_INT32(val)) return R8E_FALSE;
+    if (R8E_IS_DOUBLE(val)) {
+        double d; memcpy(&d, &val, 8);
+        return isnan(d) ? R8E_TRUE : R8E_FALSE;
+    }
+    return R8E_TRUE; /* non-numeric values -> NaN */
+}
+
+/* isFinite(val) */
+static R8EValue api_global_isFinite(R8EContext *ctx, R8EValue this_val,
+                                      int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc < 1) return R8E_FALSE;
+    R8EValue val = argv[0];
+    if (R8E_IS_INT32(val)) return R8E_TRUE;
+    if (R8E_IS_DOUBLE(val)) {
+        double d; memcpy(&d, &val, 8);
+        return isfinite(d) ? R8E_TRUE : R8E_FALSE;
+    }
+    return R8E_FALSE;
+}
+
+/* encodeURIComponent(str) - basic implementation */
+static R8EValue api_global_encodeURIComponent(R8EContext *ctx, R8EValue this_val,
+                                                int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc < 1) return api_make_string("undefined", 9);
+    char sbuf[8]; uint32_t slen;
+    const char *s = api_get_string(argv[0], sbuf, &slen);
+    /* Allocate worst case (3x) */
+    char *buf = (char *)malloc(slen * 3 + 1);
+    if (!buf) return argv[0];
+    uint32_t wp = 0;
+    for (uint32_t i = 0; i < slen; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' ||
+            c == '!' || c == '~' || c == '*' || c == '\'' || c == '(' || c == ')') {
+            buf[wp++] = c;
+        } else {
+            static const char hex[] = "0123456789ABCDEF";
+            buf[wp++] = '%';
+            buf[wp++] = hex[c >> 4];
+            buf[wp++] = hex[c & 0xF];
+        }
+    }
+    buf[wp] = '\0';
+    R8EValue result = api_make_string(buf, wp);
+    free(buf);
+    return result;
+}
+
+/* decodeURIComponent(str) - basic implementation */
+static R8EValue api_global_decodeURIComponent(R8EContext *ctx, R8EValue this_val,
+                                                int argc, const R8EValue *argv) {
+    (void)ctx; (void)this_val;
+    if (argc < 1) return api_make_string("undefined", 9);
+    char sbuf[8]; uint32_t slen;
+    const char *s = api_get_string(argv[0], sbuf, &slen);
+    char *buf = (char *)malloc(slen + 1);
+    if (!buf) return argv[0];
+    uint32_t wp = 0;
+    for (uint32_t i = 0; i < slen; i++) {
+        if (s[i] == '%' && i + 2 < slen) {
+            int hi = -1, lo = -1;
+            if (s[i+1] >= '0' && s[i+1] <= '9') hi = s[i+1] - '0';
+            else if (s[i+1] >= 'A' && s[i+1] <= 'F') hi = s[i+1] - 'A' + 10;
+            else if (s[i+1] >= 'a' && s[i+1] <= 'f') hi = s[i+1] - 'a' + 10;
+            if (s[i+2] >= '0' && s[i+2] <= '9') lo = s[i+2] - '0';
+            else if (s[i+2] >= 'A' && s[i+2] <= 'F') lo = s[i+2] - 'A' + 10;
+            else if (s[i+2] >= 'a' && s[i+2] <= 'f') lo = s[i+2] - 'a' + 10;
+            if (hi >= 0 && lo >= 0) {
+                buf[wp++] = (char)((hi << 4) | lo);
+                i += 2;
+                continue;
+            }
+        }
+        buf[wp++] = s[i];
+    }
+    buf[wp] = '\0';
+    R8EValue result = api_make_string(buf, wp);
+    free(buf);
+    return result;
+}
+
 R8EContext *r8e_context_new(void) {
     R8EContext *ctx = (R8EContext *)calloc(1, R8E_CTX_ALLOC_SIZE);
     if (!ctx) return NULL;
@@ -185,6 +746,34 @@ R8EContext *r8e_context_new(void) {
     /* Register Map and Set constructors on the global object */
     r8e_set_global_func(ctx, "Map", api_map_constructor, 0);
     r8e_set_global_func(ctx, "Set", api_set_constructor, 0);
+
+    /* --- Object constructor with static methods --- */
+    {
+        R8EValue obj_ctor = r8e_make_object(ctx);
+        r8e_set_prop(ctx, obj_ctor, "keys",    r8e_make_native_func(ctx, api_object_keys, "keys", 1));
+        r8e_set_prop(ctx, obj_ctor, "values",  r8e_make_native_func(ctx, api_object_values, "values", 1));
+        r8e_set_prop(ctx, obj_ctor, "entries", r8e_make_native_func(ctx, api_object_entries, "entries", 1));
+        r8e_set_prop(ctx, obj_ctor, "assign",  r8e_make_native_func(ctx, api_object_assign, "assign", 2));
+        r8e_set_prop(ctx, obj_ctor, "freeze",  r8e_make_native_func(ctx, api_object_freeze, "freeze", 1));
+        r8e_set_prop(ctx, obj_ctor, "create",  r8e_make_native_func(ctx, api_object_create, "create", 1));
+        r8e_set_global(ctx, "Object", obj_ctor);
+    }
+
+    /* --- Array constructor with static methods --- */
+    {
+        R8EValue arr_ctor = r8e_make_object(ctx);
+        r8e_set_prop(ctx, arr_ctor, "isArray", r8e_make_native_func(ctx, api_array_isArray, "isArray", 1));
+        r8e_set_prop(ctx, arr_ctor, "from",    r8e_make_native_func(ctx, api_array_from, "from", 1));
+        r8e_set_global(ctx, "Array", arr_ctor);
+    }
+
+    /* --- Global utility functions --- */
+    r8e_set_global_func(ctx, "parseInt",  api_global_parseInt, 2);
+    r8e_set_global_func(ctx, "parseFloat", api_global_parseFloat, 1);
+    r8e_set_global_func(ctx, "isNaN",     api_global_isNaN, 1);
+    r8e_set_global_func(ctx, "isFinite",  api_global_isFinite, 1);
+    r8e_set_global_func(ctx, "encodeURIComponent", api_global_encodeURIComponent, 1);
+    r8e_set_global_func(ctx, "decodeURIComponent", api_global_decodeURIComponent, 1);
 
     return ctx;
 }

@@ -833,6 +833,219 @@ TEST(dom_bridge_append_child) {
 }
 
 /* =========================================================================
+ * Svelte builtin tests: Object, Array, String methods, global functions
+ * ========================================================================= */
+
+TEST(builtin_object_keys) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "var o = {a:1,b:2,c:3}; Object.keys(o).length", 0);
+    ASSERT_TRUE(R8E_IS_INT32(r));
+    ASSERT_TRUE(r8e_get_int32(r) == 3);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_object_values) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "var o = {a:10,b:20}; Object.values(o).length", 0);
+    ASSERT_TRUE(R8E_IS_INT32(r));
+    ASSERT_TRUE(r8e_get_int32(r) == 2);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_object_entries) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "var o = {x:1}; Object.entries(o).length", 0);
+    ASSERT_TRUE(R8E_IS_INT32(r));
+    ASSERT_TRUE(r8e_get_int32(r) == 1);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_object_assign) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "var t = {a:1}; Object.assign(t, {b:2}); t.b", 0);
+    ASSERT_TRUE(R8E_IS_INT32(r));
+    ASSERT_TRUE(r8e_get_int32(r) == 2);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_array_isArray) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "Array.isArray([1,2,3])", 0);
+    ASSERT_TRUE(r == R8E_TRUE);
+    R8EValue r2 = r8e_eval(ctx, "Array.isArray(42)", 0);
+    ASSERT_TRUE(r2 == R8E_FALSE);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_array_from) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "Array.from([1,2,3]).length", 0);
+    ASSERT_TRUE(R8E_IS_INT32(r));
+    ASSERT_TRUE(r8e_get_int32(r) == 3);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_string_includes) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "'hello world'.includes('world')", 0);
+    ASSERT_TRUE(r == R8E_TRUE);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_string_startsWith) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "'hello'.startsWith('hel')", 0);
+    ASSERT_TRUE(r == R8E_TRUE);
+    R8EValue r2 = r8e_eval(ctx, "'hello'.startsWith('xyz')", 0);
+    ASSERT_TRUE(r2 == R8E_FALSE);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_string_endsWith) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "'hello'.endsWith('llo')", 0);
+    ASSERT_TRUE(r == R8E_TRUE);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_string_trim) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "'  hi  '.trim().length", 0);
+    ASSERT_TRUE(R8E_IS_INT32(r));
+    ASSERT_TRUE(r8e_get_int32(r) == 2);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_string_toLowerCase) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "'HELLO'.toLowerCase() === 'hello'", 0);
+    ASSERT_TRUE(r == R8E_TRUE);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_string_toUpperCase) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "'hello'.toUpperCase() === 'HELLO'", 0);
+    ASSERT_TRUE(r == R8E_TRUE);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_string_replace) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "'hello world'.replace('world', 'js') === 'hello js'", 0);
+    ASSERT_TRUE(r == R8E_TRUE);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_string_substring) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "'hello'.substring(1,3) === 'el'", 0);
+    ASSERT_TRUE(r == R8E_TRUE);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_string_repeat) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "'ab'.repeat(3) === 'ababab'", 0);
+    ASSERT_TRUE(r == R8E_TRUE);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_string_padStart) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "'5'.padStart(3, '0') === '005'", 0);
+    ASSERT_TRUE(r == R8E_TRUE);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_parseint) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "parseInt('42')", 0);
+    ASSERT_TRUE(R8E_IS_INT32(r));
+    ASSERT_TRUE(r8e_get_int32(r) == 42);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_parseint_hex) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "parseInt('ff', 16)", 0);
+    ASSERT_TRUE(R8E_IS_INT32(r));
+    ASSERT_TRUE(r8e_get_int32(r) == 255);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_parsefloat) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "parseFloat('3.14')", 0);
+    ASSERT_TRUE(R8E_IS_DOUBLE(r));
+    double d = r8e_to_double(r);
+    ASSERT_TRUE(d > 3.13 && d < 3.15);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_isnan) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "isNaN(NaN)", 0);
+    ASSERT_TRUE(r == R8E_TRUE);
+    R8EValue r2 = r8e_eval(ctx, "isNaN(42)", 0);
+    ASSERT_TRUE(r2 == R8E_FALSE);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_isfinite) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "isFinite(42)", 0);
+    ASSERT_TRUE(r == R8E_TRUE);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_array_findIndex) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "[10,20,30].findIndex(function(x){return x===20})", 0);
+    ASSERT_TRUE(R8E_IS_INT32(r));
+    ASSERT_TRUE(r8e_get_int32(r) == 1);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_array_some) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "[1,2,3].some(function(x){return x>2})", 0);
+    ASSERT_TRUE(r == R8E_TRUE);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_array_every) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "[2,4,6].every(function(x){return x%2===0})", 0);
+    ASSERT_TRUE(r == R8E_TRUE);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_array_sort) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "var a=[3,1,2]; a.sort(function(x,y){return x-y}); a[0]", 0);
+    ASSERT_TRUE(R8E_IS_INT32(r));
+    ASSERT_TRUE(r8e_get_int32(r) == 1);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_array_flat) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "[[1,2],[3]].flat().length", 0);
+    ASSERT_TRUE(R8E_IS_INT32(r));
+    ASSERT_TRUE(r8e_get_int32(r) == 3);
+    r8e_context_free(ctx);
+}
+
+TEST(builtin_array_splice) {
+    R8EContext *ctx = r8e_context_new();
+    R8EValue r = r8e_eval(ctx, "var a=[1,2,3,4]; a.splice(1,2); a.length", 0);
+    ASSERT_TRUE(R8E_IS_INT32(r));
+    ASSERT_TRUE(r8e_get_int32(r) == 2);
+    r8e_context_free(ctx);
+}
+
+/* =========================================================================
  * Suite entry point
  * ========================================================================= */
 
@@ -864,4 +1077,33 @@ void run_api_wire_tests(void) {
     RUN_TEST(dom_bridge_create_element);
     RUN_TEST(dom_bridge_text_content);
     RUN_TEST(dom_bridge_append_child);
+
+    /* Svelte builtin tests */
+    RUN_TEST(builtin_object_keys);
+    RUN_TEST(builtin_object_values);
+    RUN_TEST(builtin_object_entries);
+    RUN_TEST(builtin_object_assign);
+    RUN_TEST(builtin_array_isArray);
+    RUN_TEST(builtin_array_from);
+    RUN_TEST(builtin_string_includes);
+    RUN_TEST(builtin_string_startsWith);
+    RUN_TEST(builtin_string_endsWith);
+    RUN_TEST(builtin_string_trim);
+    RUN_TEST(builtin_string_toLowerCase);
+    RUN_TEST(builtin_string_toUpperCase);
+    RUN_TEST(builtin_string_replace);
+    RUN_TEST(builtin_string_substring);
+    RUN_TEST(builtin_string_repeat);
+    RUN_TEST(builtin_string_padStart);
+    RUN_TEST(builtin_parseint);
+    RUN_TEST(builtin_parseint_hex);
+    RUN_TEST(builtin_parsefloat);
+    RUN_TEST(builtin_isnan);
+    RUN_TEST(builtin_isfinite);
+    RUN_TEST(builtin_array_findIndex);
+    RUN_TEST(builtin_array_some);
+    RUN_TEST(builtin_array_every);
+    RUN_TEST(builtin_array_sort);
+    RUN_TEST(builtin_array_flat);
+    RUN_TEST(builtin_array_splice);
 }
