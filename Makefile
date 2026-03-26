@@ -101,7 +101,8 @@ SRCS_UI = \
 	src/ui/r8e_style.c \
 	src/ui/r8e_layout.c \
 	src/ui/r8e_paint.c \
-	src/ui/r8e_event.c
+	src/ui/r8e_event.c \
+	src/r8e_html.c
 
 # GPU module sources
 SRCS_GPU = \

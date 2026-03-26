@@ -274,6 +274,12 @@ void run_css_vars_tests(void);
 /* CSS shorthand property expansion tests */
 void run_css_shorthand_tests(void);
 
+/* HTML parser tests */
+void run_html_tests(void);
+
+/* Table layout and scroll support tests */
+void run_layout_table_tests(void);
+
 /* =========================================================================
  * Main
  * ========================================================================= */
@@ -408,6 +414,8 @@ int main(int argc, char **argv) {
     run_suite_isolated("font", run_font_tests);
     run_suite_isolated("css-vars", run_css_vars_tests);
     run_suite_isolated("css-shorthand", run_css_shorthand_tests);
+    run_suite_isolated("html", run_html_tests);
+    run_suite_isolated("layout-table", run_layout_table_tests);
 
     printf("=== Summary: %d passed, %d failed out of %d tests ===\n",
            g_tests_passed, g_tests_failed, g_tests_run);

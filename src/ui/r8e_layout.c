@@ -60,10 +60,13 @@ typedef struct R8EUILayoutBox {
  * ------------------------------------------------------------------------- */
 
 typedef enum {
-    R8E_UI_DISPLAY_BLOCK   = 0,
-    R8E_UI_DISPLAY_INLINE  = 1,
-    R8E_UI_DISPLAY_FLEX    = 2,
-    R8E_UI_DISPLAY_NONE    = 3,
+    R8E_UI_DISPLAY_BLOCK       = 0,
+    R8E_UI_DISPLAY_INLINE      = 1,
+    R8E_UI_DISPLAY_FLEX        = 2,
+    R8E_UI_DISPLAY_NONE        = 3,
+    R8E_UI_DISPLAY_TABLE       = 4,
+    R8E_UI_DISPLAY_TABLE_ROW   = 5,
+    R8E_UI_DISPLAY_TABLE_CELL  = 6,
 } R8EUIDisplay;
 
 /* -------------------------------------------------------------------------
@@ -85,6 +88,7 @@ typedef enum {
     R8E_UI_OVERFLOW_VISIBLE = 0,
     R8E_UI_OVERFLOW_HIDDEN  = 1,
     R8E_UI_OVERFLOW_SCROLL  = 2,
+    R8E_UI_OVERFLOW_AUTO    = 3,
 } R8EUIOverflow;
 
 /* -------------------------------------------------------------------------
@@ -237,6 +241,7 @@ struct R8EUIDOMNode {
     float              scroll_width;
     float              scroll_height;
     float              baseline;       /* first baseline for align baseline */
+    bool               scrollable;     /* true if overflow is auto/scroll */
 };
 
 /* Node flags */
@@ -525,6 +530,8 @@ static void r8e_ui_layout_inline(R8EUIDOMNode *node, float container_w,
                                float container_h);
 static void r8e_ui_layout_positioned(R8EUIDOMNode *node, float container_w,
                                    float container_h);
+static void r8e_ui_layout_table(R8EUIDOMNode *node, float container_w,
+                               float container_h);
 
 
 /* =========================================================================
@@ -1994,6 +2001,367 @@ static void r8e_ui_layout_positioned(R8EUIDOMNode *node, float container_w,
 
 
 /* =========================================================================
+ * Table Layout
+ *
+ * Simple auto-sizing table layout:
+ *   1. First pass: measure all cells to find max width per column
+ *   2. Distribute remaining width proportionally
+ *   3. Second pass: position cells in a grid based on column widths
+ *      and row heights
+ *
+ * Table structure expected: <table> contains <tr> rows, each <tr> contains
+ * <td>/<th> cells. <thead>/<tbody>/<tfoot> are treated as transparent
+ * wrappers whose children (rows) are collected.
+ * ========================================================================= */
+
+/* Maximum number of columns/rows for stack allocation */
+#define R8E_UI_MAX_TABLE_COLS 64
+#define R8E_UI_MAX_TABLE_ROWS 128
+
+/*
+ * Check if a node is a table row (display: table-row).
+ */
+static inline bool r8e_ui_is_table_row(const R8EUIDOMNode *node) {
+    return node && node->style.display == R8E_UI_DISPLAY_TABLE_ROW;
+}
+
+/*
+ * Check if a node is a table cell (display: table-cell).
+ */
+static inline bool r8e_ui_is_table_cell(const R8EUIDOMNode *node) {
+    return node && node->style.display == R8E_UI_DISPLAY_TABLE_CELL;
+}
+
+/*
+ * Collect table rows from the table node. Rows may be direct children
+ * or nested inside thead/tbody/tfoot section elements. Section elements
+ * with display: block are treated as transparent row-group wrappers.
+ */
+static int r8e_ui_table_collect_rows(R8EUIDOMNode *table,
+                                     R8EUIDOMNode **rows, int max_rows) {
+    int count = 0;
+    R8EUIDOMNode *child = table->first_child;
+    while (child && count < max_rows) {
+        if (child->style.display == R8E_UI_DISPLAY_NONE) {
+            child = child->next_sibling;
+            continue;
+        }
+        if (r8e_ui_is_table_row(child)) {
+            rows[count++] = child;
+        } else {
+            /* Might be thead/tbody/tfoot — look inside for rows */
+            R8EUIDOMNode *inner = child->first_child;
+            while (inner && count < max_rows) {
+                if (inner->style.display != R8E_UI_DISPLAY_NONE &&
+                    r8e_ui_is_table_row(inner)) {
+                    rows[count++] = inner;
+                }
+                inner = inner->next_sibling;
+            }
+        }
+        child = child->next_sibling;
+    }
+    return count;
+}
+
+/*
+ * Count the number of cells in a table row.
+ */
+static int r8e_ui_table_row_cell_count(const R8EUIDOMNode *row) {
+    int count = 0;
+    const R8EUIDOMNode *cell = row->first_child;
+    while (cell) {
+        if (cell->style.display != R8E_UI_DISPLAY_NONE &&
+            r8e_ui_is_table_cell(cell)) {
+            count++;
+        }
+        cell = cell->next_sibling;
+    }
+    return count;
+}
+
+/*
+ * Layout a table element and all its rows/cells.
+ */
+static void r8e_ui_layout_table(R8EUIDOMNode *node, float container_w,
+                                float container_h) {
+    if (!node) return;
+
+    const R8EUIComputedStyle *s = &node->style;
+    R8EUILayoutBox *box = &node->layout;
+
+    /* Copy box model edges */
+    memcpy(box->padding, s->padding, sizeof(float) * 4);
+    memcpy(box->border, s->border_width, sizeof(float) * 4);
+    memcpy(box->margin, s->margin, sizeof(float) * 4);
+
+    /* Resolve explicit table width */
+    float resolved_w = r8e_ui_resolve_dim(s->width, container_w);
+    if (r8e_ui_is_undefined(resolved_w)) {
+        resolved_w = container_w;
+        if (!r8e_ui_is_undefined(resolved_w)) {
+            resolved_w -= r8e_ui_margin_h(s) + r8e_ui_border_h(s) +
+                          r8e_ui_padding_h(s);
+            if (resolved_w < 0.0f) resolved_w = 0.0f;
+        }
+    }
+
+    float content_w = resolved_w;
+    if (r8e_ui_is_undefined(content_w)) content_w = 0.0f;
+
+    /* Collect all rows */
+    R8EUIDOMNode *rows[R8E_UI_MAX_TABLE_ROWS];
+    int num_rows = r8e_ui_table_collect_rows(node, rows, R8E_UI_MAX_TABLE_ROWS);
+
+    /* Determine number of columns (max cells across all rows) */
+    int num_cols = 0;
+    for (int r = 0; r < num_rows; r++) {
+        int nc = r8e_ui_table_row_cell_count(rows[r]);
+        if (nc > num_cols) num_cols = nc;
+    }
+    if (num_cols > R8E_UI_MAX_TABLE_COLS) num_cols = R8E_UI_MAX_TABLE_COLS;
+
+    /* === Pass 1: Measure cells, find max content width per column === */
+    float col_widths[R8E_UI_MAX_TABLE_COLS];
+    float row_heights[R8E_UI_MAX_TABLE_ROWS];
+    memset(col_widths, 0, sizeof(float) * (size_t)num_cols);
+    memset(row_heights, 0, sizeof(float) * (size_t)num_rows);
+
+    for (int r = 0; r < num_rows; r++) {
+        R8EUIDOMNode *cell = rows[r]->first_child;
+        int c = 0;
+        while (cell && c < num_cols) {
+            if (cell->style.display == R8E_UI_DISPLAY_NONE) {
+                cell = cell->next_sibling;
+                continue;
+            }
+            if (!r8e_ui_is_table_cell(cell)) {
+                cell = cell->next_sibling;
+                continue;
+            }
+
+            /* Measure cell content (intrinsic size only, not block layout) */
+            r8e_ui_measure_node(cell, content_w, container_h);
+
+            /* Use the intrinsic measured size from measure_node */
+            float cell_w = cell->layout.width;
+            float cell_h = cell->layout.height;
+
+            /* Check for explicit cell width */
+            float explicit_w = r8e_ui_resolve_dim(cell->style.width, content_w);
+            if (!r8e_ui_is_undefined(explicit_w)) {
+                cell_w = explicit_w + r8e_ui_padding_h(&cell->style) +
+                         r8e_ui_border_h(&cell->style);
+            }
+
+            if (cell_w > col_widths[c]) col_widths[c] = cell_w;
+            if (cell_h > row_heights[r]) row_heights[r] = cell_h;
+
+            c++;
+            cell = cell->next_sibling;
+        }
+    }
+
+    /* === Pass 1.5: Distribute remaining width proportionally === */
+    float total_content_width = 0.0f;
+    for (int c = 0; c < num_cols; c++) {
+        total_content_width += col_widths[c];
+    }
+
+    if (total_content_width < content_w && num_cols > 0) {
+        float remaining = content_w - total_content_width;
+        float per_col = remaining / (float)num_cols;
+        for (int c = 0; c < num_cols; c++) {
+            col_widths[c] += per_col;
+        }
+        total_content_width = content_w;
+    }
+
+    /* === Pass 2: Position cells in the grid === */
+    float pad_top = box->padding[EDGE_TOP] + box->border[EDGE_TOP];
+    float pad_left = box->padding[EDGE_LEFT] + box->border[EDGE_LEFT];
+    float cursor_y = 0.0f;
+
+    for (int r = 0; r < num_rows; r++) {
+        R8EUILayoutBox *row_box = &rows[r]->layout;
+        memcpy(row_box->padding, rows[r]->style.padding, sizeof(float) * 4);
+        memcpy(row_box->border, rows[r]->style.border_width, sizeof(float) * 4);
+        memcpy(row_box->margin, rows[r]->style.margin, sizeof(float) * 4);
+
+        row_box->x = pad_left;
+        row_box->y = pad_top + cursor_y;
+        row_box->width = total_content_width;
+        row_box->height = row_heights[r];
+
+        /* Position cells within the row */
+        float cursor_x = 0.0f;
+        R8EUIDOMNode *cell = rows[r]->first_child;
+        int c = 0;
+        while (cell && c < num_cols) {
+            if (cell->style.display == R8E_UI_DISPLAY_NONE) {
+                cell = cell->next_sibling;
+                continue;
+            }
+            if (!r8e_ui_is_table_cell(cell)) {
+                cell = cell->next_sibling;
+                continue;
+            }
+
+            R8EUILayoutBox *cell_box = &cell->layout;
+            memcpy(cell_box->padding, cell->style.padding, sizeof(float) * 4);
+            memcpy(cell_box->border, cell->style.border_width, sizeof(float) * 4);
+            memcpy(cell_box->margin, cell->style.margin, sizeof(float) * 4);
+
+            /* Cell content width is column width minus padding/border */
+            float cell_content_w = col_widths[c] -
+                                   r8e_ui_padding_h(&cell->style) -
+                                   r8e_ui_border_h(&cell->style);
+            if (cell_content_w < 0.0f) cell_content_w = 0.0f;
+
+            /* Cell content height is row height minus padding/border */
+            float cell_content_h = row_heights[r] -
+                                   r8e_ui_padding_v(&cell->style) -
+                                   r8e_ui_border_v(&cell->style);
+            if (cell_content_h < 0.0f) cell_content_h = 0.0f;
+
+            cell_box->x = cursor_x + cell_box->padding[EDGE_LEFT] +
+                          cell_box->border[EDGE_LEFT];
+            cell_box->y = cell_box->padding[EDGE_TOP] +
+                          cell_box->border[EDGE_TOP];
+            cell_box->width = cell_content_w;
+            cell_box->height = cell_content_h;
+
+            /* Re-layout cell children with final width */
+            R8EUIDOMNode *cell_child = cell->first_child;
+            float child_y = 0.0f;
+            while (cell_child) {
+                if (cell_child->style.display != R8E_UI_DISPLAY_NONE) {
+                    r8e_ui_layout_node(cell_child, cell_content_w, cell_content_h);
+                    cell_child->layout.x = cell_child->layout.margin[EDGE_LEFT];
+                    cell_child->layout.y = child_y +
+                                           cell_child->layout.margin[EDGE_TOP];
+                    child_y = cell_child->layout.y + cell_child->layout.height +
+                              r8e_ui_padding_v(&cell_child->style) +
+                              r8e_ui_border_v(&cell_child->style) +
+                              cell_child->layout.margin[EDGE_BOTTOM];
+                }
+                cell_child = cell_child->next_sibling;
+            }
+
+            cursor_x += col_widths[c];
+            c++;
+            cell = cell->next_sibling;
+        }
+
+        cursor_y += row_heights[r];
+    }
+
+    /* Set table dimensions */
+    box->width = r8e_ui_apply_min_max_width(s, total_content_width, container_w);
+
+    float resolved_h = r8e_ui_resolve_dim(s->height, container_h);
+    if (r8e_ui_is_undefined(resolved_h)) {
+        resolved_h = cursor_y;
+    }
+    resolved_h = r8e_ui_apply_min_max_height(s, resolved_h, container_h);
+    box->height = resolved_h;
+
+    /* Record scroll dimensions */
+    node->scroll_width = r8e_ui_maxf(box->width, total_content_width);
+    node->scroll_height = r8e_ui_maxf(resolved_h, cursor_y);
+}
+
+
+/* =========================================================================
+ * Scroll Support
+ *
+ * Elements with overflow: auto or overflow: scroll are scrollable.
+ * The scroll offset is clamped to [0, content_height - element_height].
+ * ========================================================================= */
+
+/*
+ * Mark a node as scrollable based on its overflow property and content size.
+ * Called after layout to determine which nodes can scroll.
+ */
+void r8e_ui_layout_update_scrollable(R8EUIDOMNode *node) {
+    if (!node) return;
+
+    /* Check if overflow is auto, scroll, or hidden */
+    if (node->style.overflow == R8E_UI_OVERFLOW_SCROLL ||
+        node->style.overflow == R8E_UI_OVERFLOW_AUTO ||
+        node->style.overflow == R8E_UI_OVERFLOW_HIDDEN) {
+        /* scrollable if content exceeds element bounds */
+        node->scrollable = (node->scroll_height > node->layout.height) ||
+                          (node->scroll_width > node->layout.width);
+    } else {
+        node->scrollable = false;
+    }
+
+    /* Clamp current scroll offset */
+    if (node->scrollable) {
+        float max_scroll_y = node->scroll_height - node->layout.height;
+        if (max_scroll_y < 0.0f) max_scroll_y = 0.0f;
+        node->scroll_y = r8e_ui_clampf(node->scroll_y, 0.0f, max_scroll_y);
+
+        float max_scroll_x = node->scroll_width - node->layout.width;
+        if (max_scroll_x < 0.0f) max_scroll_x = 0.0f;
+        node->scroll_x = r8e_ui_clampf(node->scroll_x, 0.0f, max_scroll_x);
+    } else {
+        node->scroll_x = 0.0f;
+        node->scroll_y = 0.0f;
+    }
+
+    /* Recurse to children */
+    R8EUIDOMNode *child = node->first_child;
+    while (child) {
+        r8e_ui_layout_update_scrollable(child);
+        child = child->next_sibling;
+    }
+}
+
+/*
+ * Apply a scroll delta (e.g., from mouse wheel) to a scrollable node.
+ * Returns true if the scroll offset actually changed.
+ *
+ * @param node      The scrollable node.
+ * @param delta_x   Horizontal scroll delta (positive = right).
+ * @param delta_y   Vertical scroll delta (positive = down).
+ */
+bool r8e_ui_layout_scroll(R8EUIDOMNode *node, float delta_x, float delta_y) {
+    if (!node || !node->scrollable) return false;
+
+    float old_x = node->scroll_x;
+    float old_y = node->scroll_y;
+
+    node->scroll_y += delta_y;
+    node->scroll_x += delta_x;
+
+    /* Clamp */
+    float max_scroll_y = node->scroll_height - node->layout.height;
+    if (max_scroll_y < 0.0f) max_scroll_y = 0.0f;
+    node->scroll_y = r8e_ui_clampf(node->scroll_y, 0.0f, max_scroll_y);
+
+    float max_scroll_x = node->scroll_width - node->layout.width;
+    if (max_scroll_x < 0.0f) max_scroll_x = 0.0f;
+    node->scroll_x = r8e_ui_clampf(node->scroll_x, 0.0f, max_scroll_x);
+
+    return (node->scroll_x != old_x) || (node->scroll_y != old_y);
+}
+
+/*
+ * Find the nearest scrollable ancestor of a node (or the node itself).
+ * Used for routing mouse wheel events to the right container.
+ */
+R8EUIDOMNode *r8e_ui_layout_find_scrollable(R8EUIDOMNode *node) {
+    while (node) {
+        if (node->scrollable) return node;
+        node = node->parent;
+    }
+    return NULL;
+}
+
+
+/* =========================================================================
  * Main Layout Entry Point
  *
  * Dispatches to the appropriate layout algorithm based on the node's
@@ -2017,6 +2385,14 @@ static void r8e_ui_layout_node(R8EUIDOMNode *node, float container_w,
         break;
     case R8E_UI_DISPLAY_INLINE:
         r8e_ui_layout_inline(node, container_w, container_h);
+        break;
+    case R8E_UI_DISPLAY_TABLE:
+        r8e_ui_layout_table(node, container_w, container_h);
+        break;
+    case R8E_UI_DISPLAY_TABLE_ROW:
+    case R8E_UI_DISPLAY_TABLE_CELL:
+        /* Table rows and cells are laid out by their parent table */
+        r8e_ui_layout_block(node, container_w, container_h);
         break;
     case R8E_UI_DISPLAY_BLOCK:
     default:
@@ -2103,6 +2479,9 @@ void r8e_ui_layout_compute(R8EUIDOMNode *root, float viewport_w,
     root->layout.y = 0.0f;
 
     r8e_ui_layout_node(root, viewport_w, viewport_h);
+
+    /* Phase 3: Update scrollable state */
+    r8e_ui_layout_update_scrollable(root);
 }
 
 /*
@@ -2387,9 +2766,12 @@ static int r8e_ui_layout_dump_recursive(const R8EUIDOMNode *node,
     } else {
         const char *display_str = "block";
         switch (node->style.display) {
-        case R8E_UI_DISPLAY_FLEX:   display_str = "flex"; break;
-        case R8E_UI_DISPLAY_INLINE: display_str = "inline"; break;
-        case R8E_UI_DISPLAY_NONE:   display_str = "none"; break;
+        case R8E_UI_DISPLAY_FLEX:       display_str = "flex"; break;
+        case R8E_UI_DISPLAY_INLINE:     display_str = "inline"; break;
+        case R8E_UI_DISPLAY_NONE:       display_str = "none"; break;
+        case R8E_UI_DISPLAY_TABLE:      display_str = "table"; break;
+        case R8E_UI_DISPLAY_TABLE_ROW:  display_str = "table-row"; break;
+        case R8E_UI_DISPLAY_TABLE_CELL: display_str = "table-cell"; break;
         default: break;
         }
 

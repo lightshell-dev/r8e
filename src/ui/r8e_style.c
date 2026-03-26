@@ -270,10 +270,13 @@ typedef enum {
 
 /* Display */
 typedef enum {
-    NCSS_DISPLAY_BLOCK   = 0,
-    NCSS_DISPLAY_INLINE  = 1,
-    NCSS_DISPLAY_FLEX    = 2,
-    NCSS_DISPLAY_NONE    = 3
+    NCSS_DISPLAY_BLOCK       = 0,
+    NCSS_DISPLAY_INLINE      = 1,
+    NCSS_DISPLAY_FLEX        = 2,
+    NCSS_DISPLAY_NONE        = 3,
+    NCSS_DISPLAY_TABLE       = 4,
+    NCSS_DISPLAY_TABLE_ROW   = 5,
+    NCSS_DISPLAY_TABLE_CELL  = 6
 } R8EUICSSDisplay;
 
 /* Position */
@@ -1835,10 +1838,13 @@ static void ncss_apply_declaration(R8EUIComputedStyle *style,
 
     /* -- Display and layout model -- */
     case NCSS_PROP_DISPLAY:
-        if (strcmp(v, "flex") == 0)        style->display = NCSS_DISPLAY_FLEX;
-        else if (strcmp(v, "block") == 0)  style->display = NCSS_DISPLAY_BLOCK;
-        else if (strcmp(v, "inline") == 0) style->display = NCSS_DISPLAY_INLINE;
-        else if (strcmp(v, "none") == 0)   style->display = NCSS_DISPLAY_NONE;
+        if (strcmp(v, "flex") == 0)             style->display = NCSS_DISPLAY_FLEX;
+        else if (strcmp(v, "block") == 0)       style->display = NCSS_DISPLAY_BLOCK;
+        else if (strcmp(v, "inline") == 0)      style->display = NCSS_DISPLAY_INLINE;
+        else if (strcmp(v, "none") == 0)        style->display = NCSS_DISPLAY_NONE;
+        else if (strcmp(v, "table") == 0)       style->display = NCSS_DISPLAY_TABLE;
+        else if (strcmp(v, "table-row") == 0)   style->display = NCSS_DISPLAY_TABLE_ROW;
+        else if (strcmp(v, "table-cell") == 0)  style->display = NCSS_DISPLAY_TABLE_CELL;
         break;
 
     case NCSS_PROP_POSITION:
@@ -2420,7 +2426,7 @@ void r8e_ui_style_free_tree(R8EUIDOMNode *root) {
 void r8e_ui_style_dump(const R8EUIComputedStyle *style) {
     if (!style) { fprintf(stderr, "(null style)\n"); return; }
 
-    static const char *display_names[] = { "block", "inline", "flex", "none" };
+    static const char *display_names[] = { "block", "inline", "flex", "none", "table", "table-row", "table-cell" };
     static const char *position_names[] = { "static", "relative", "absolute", "fixed" };
     static const char *flex_dir_names[] = { "row", "row-reverse", "column", "column-reverse" };
 
