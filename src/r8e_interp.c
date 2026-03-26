@@ -560,6 +560,10 @@ typedef struct R8ECallFrame {
     /* Is this a constructor call? */
     bool                is_construct;
 
+    /* Closure environment frame (shared with inner closures) */
+    R8EEnvFrameInterp  *env_frame;
+    bool                owns_locals;  /* false if locals shared with env_frame */
+
     /* Stack canary position */
     R8EValue           *canary_ptr;
 } R8ECallFrame;
@@ -772,6 +776,16 @@ static inline bool r8e_is_callable(R8EValue v) {
  * Internal helper: get string data from any string value
  * ========================================================================= */
 
+/* External: look up atom string by ID */
+extern const char *r8e_atom_get(void *ctx, uint32_t atom_id);
+
+static const char *r8e_atom_get_str(void *ctx, uint32_t atom_id, uint32_t *out_len) {
+    const char *s = r8e_atom_get(ctx, atom_id);
+    if (s) { *out_len = (uint32_t)strlen(s); return s; }
+    *out_len = 0;
+    return NULL;
+}
+
 static const char *r8e_interp_get_string(R8EValue v, char *buf,
                                           uint32_t *out_len) {
     if (R8E_IS_INLINE_STR(v)) {
@@ -782,6 +796,11 @@ static const char *r8e_interp_get_string(R8EValue v, char *buf,
         buf[len] = '\0';
         *out_len = (uint32_t)len;
         return buf;
+    }
+    if (R8E_IS_ATOM(v)) {
+        uint32_t atom_id = (uint32_t)(v & 0xFFFFFFFFULL);
+        const char *s = r8e_atom_get_str(NULL, atom_id, out_len);
+        if (s) return s;
     }
     if (R8E_IS_POINTER(v)) {
         const R8EGCHeader *h = (const R8EGCHeader *)r8e_interp_get_pointer(v);
@@ -801,6 +820,7 @@ static const char *r8e_interp_get_string(R8EValue v, char *buf,
 
 static inline bool r8e_is_string_val(R8EValue v) {
     if (R8E_IS_INLINE_STR(v)) return true;
+    if (R8E_IS_ATOM(v)) return true; /* atoms are interned strings */
     if (!R8E_IS_POINTER(v)) return false;
     const R8EGCHeader *h = (const R8EGCHeader *)r8e_interp_get_pointer(v);
     return h && R8E_GC_GET_KIND(h->flags) == R8E_GC_KIND_STRING;
@@ -1406,18 +1426,101 @@ static R8EValue r8e_interp_call_internal(R8EInterpContext *ctx,
  * which method was requested.
  * ========================================================================= */
 
+/* Strict equality comparison (===) for values */
+static bool r8e_strict_equal(R8EValue a, R8EValue b) {
+    if (a == b) return true;
+    if (R8E_IS_DOUBLE(a) && R8E_IS_DOUBLE(b)) {
+        double da, db;
+        memcpy(&da, &a, sizeof(double));
+        memcpy(&db, &b, sizeof(double));
+        return da == db;
+    }
+    if (R8E_IS_INT32(a) && R8E_IS_DOUBLE(b)) {
+        double db; memcpy(&db, &b, sizeof(double));
+        return (double)(int32_t)(a & 0xFFFFFFFFULL) == db;
+    }
+    if (R8E_IS_DOUBLE(a) && R8E_IS_INT32(b)) {
+        double da; memcpy(&da, &a, sizeof(double));
+        return da == (double)(int32_t)(b & 0xFFFFFFFFULL);
+    }
+    return false;
+}
+
+/* Lazily resolved atom IDs for builtin method dispatch */
+static struct {
+    bool initialized;
+    uint32_t push, pop, shift, unshift;
+    uint32_t map, filter, reduce, find, forEach;
+    uint32_t indexOf, includes, join, reverse, sort, slice, splice;
+    uint32_t split, concat, trim, trimStart, trimEnd;
+    uint32_t startsWith, endsWith, repeat, padStart, padEnd;
+    uint32_t substring, charAt, charCodeAt, replace;
+    uint32_t toLowerCase, toUpperCase;
+    uint32_t test, exec;
+    uint32_t then, catch_a, finally_a, resolve, reject;
+    uint32_t stringify, parse;
+    uint32_t keys, values, entries;
+} g_method_atoms;
+
+extern uint32_t r8e_atom_intern_cstr(void *ctx, const char *cstr);
+
+static void ensure_method_atoms(void) {
+    if (g_method_atoms.initialized) return;
+    g_method_atoms.push = r8e_atom_intern_cstr(NULL, "push");
+    g_method_atoms.pop = r8e_atom_intern_cstr(NULL, "pop");
+    g_method_atoms.shift = r8e_atom_intern_cstr(NULL, "shift");
+    g_method_atoms.unshift = r8e_atom_intern_cstr(NULL, "unshift");
+    g_method_atoms.map = r8e_atom_intern_cstr(NULL, "map");
+    g_method_atoms.filter = r8e_atom_intern_cstr(NULL, "filter");
+    g_method_atoms.reduce = r8e_atom_intern_cstr(NULL, "reduce");
+    g_method_atoms.find = r8e_atom_intern_cstr(NULL, "find");
+    g_method_atoms.forEach = r8e_atom_intern_cstr(NULL, "forEach");
+    g_method_atoms.indexOf = r8e_atom_intern_cstr(NULL, "indexOf");
+    g_method_atoms.includes = r8e_atom_intern_cstr(NULL, "includes");
+    g_method_atoms.join = r8e_atom_intern_cstr(NULL, "join");
+    g_method_atoms.reverse = r8e_atom_intern_cstr(NULL, "reverse");
+    g_method_atoms.sort = r8e_atom_intern_cstr(NULL, "sort");
+    g_method_atoms.slice = r8e_atom_intern_cstr(NULL, "slice");
+    g_method_atoms.splice = r8e_atom_intern_cstr(NULL, "splice");
+    g_method_atoms.split = r8e_atom_intern_cstr(NULL, "split");
+    g_method_atoms.concat = r8e_atom_intern_cstr(NULL, "concat");
+    g_method_atoms.trim = r8e_atom_intern_cstr(NULL, "trim");
+    g_method_atoms.startsWith = r8e_atom_intern_cstr(NULL, "startsWith");
+    g_method_atoms.endsWith = r8e_atom_intern_cstr(NULL, "endsWith");
+    g_method_atoms.substring = r8e_atom_intern_cstr(NULL, "substring");
+    g_method_atoms.charAt = r8e_atom_intern_cstr(NULL, "charAt");
+    g_method_atoms.replace = r8e_atom_intern_cstr(NULL, "replace");
+    g_method_atoms.toLowerCase = r8e_atom_intern_cstr(NULL, "toLowerCase");
+    g_method_atoms.toUpperCase = r8e_atom_intern_cstr(NULL, "toUpperCase");
+    g_method_atoms.test = r8e_atom_intern_cstr(NULL, "test");
+    g_method_atoms.exec = r8e_atom_intern_cstr(NULL, "exec");
+    g_method_atoms.then = r8e_atom_intern_cstr(NULL, "then");
+    g_method_atoms.catch_a = r8e_atom_intern_cstr(NULL, "catch");
+    g_method_atoms.finally_a = r8e_atom_intern_cstr(NULL, "finally");
+    g_method_atoms.resolve = r8e_atom_intern_cstr(NULL, "resolve");
+    g_method_atoms.reject = r8e_atom_intern_cstr(NULL, "reject");
+    g_method_atoms.stringify = r8e_atom_intern_cstr(NULL, "stringify");
+    g_method_atoms.parse = r8e_atom_intern_cstr(NULL, "parse");
+    g_method_atoms.keys = r8e_atom_intern_cstr(NULL, "keys");
+    g_method_atoms.values = r8e_atom_intern_cstr(NULL, "values");
+    g_method_atoms.entries = r8e_atom_intern_cstr(NULL, "entries");
+    g_method_atoms.initialized = true;
+}
+
 static bool r8e_interp_builtin_method(R8EInterpContext *ctx,
                                        R8EValue this_val,
                                        uint32_t method_atom,
                                        const R8EValue *argv, int argc,
                                        R8EValue *out_result) {
+    ensure_method_atoms();
+
     /* --- String methods --- */
     if (r8e_is_string_val(this_val)) {
         char sbuf[8];
         uint32_t slen;
         const char *sdata = r8e_interp_get_string(this_val, sbuf, &slen);
 
-        if (method_atom == 126 /* R8E_ATOM_includes */) {
+        if (method_atom == g_method_atoms.includes) {
             if (argc < 1) { *out_result = R8E_FALSE; return true; }
             char nbuf[8]; uint32_t nlen;
             const char *needle = r8e_interp_get_string(argv[0], nbuf, &nlen);
@@ -1433,7 +1536,7 @@ static bool r8e_interp_builtin_method(R8EInterpContext *ctx,
             return true;
         }
 
-        if (method_atom == 124 /* R8E_ATOM_indexOf */) {
+        if (method_atom == g_method_atoms.indexOf) {
             if (argc < 1) { *out_result = r8e_interp_from_int32(-1); return true; }
             char nbuf[8]; uint32_t nlen;
             const char *needle = r8e_interp_get_string(argv[0], nbuf, &nlen);
@@ -1449,7 +1552,7 @@ static bool r8e_interp_builtin_method(R8EInterpContext *ctx,
             return true;
         }
 
-        if (method_atom == 159 /* R8E_ATOM_split */) {
+        if (method_atom == g_method_atoms.split) {
             if (argc < 1) {
                 /* No separator: return array with whole string */
                 R8EArrayInterp *arr = (R8EArrayInterp *)calloc(1, sizeof(R8EArrayInterp));
@@ -1507,7 +1610,7 @@ static bool r8e_interp_builtin_method(R8EInterpContext *ctx,
         if (R8E_GC_GET_KIND(h->flags) == R8E_GC_KIND_ARRAY) {
         R8EArrayInterp *arr = (R8EArrayInterp *)ptr;
 
-        if (method_atom == 114 /* R8E_ATOM_push */) {
+        if (method_atom == g_method_atoms.push) {
             for (int i = 0; i < argc; i++) {
                 if (arr->length >= arr->capacity) {
                     uint32_t new_cap = arr->capacity ? arr->capacity * 2 : 8;
@@ -1525,7 +1628,7 @@ static bool r8e_interp_builtin_method(R8EInterpContext *ctx,
             return true;
         }
 
-        if (method_atom == 115 /* R8E_ATOM_pop */) {
+        if (method_atom == g_method_atoms.pop) {
             if (arr->length == 0) {
                 *out_result = R8E_UNDEFINED;
             } else {
@@ -1535,7 +1638,7 @@ static bool r8e_interp_builtin_method(R8EInterpContext *ctx,
             return true;
         }
 
-        if (method_atom == 132 /* R8E_ATOM_map */) {
+        if (method_atom == g_method_atoms.map) {
             if (argc < 1 || !r8e_is_callable(argv[0])) {
                 r8e_interp_throw_type_error(ctx, "map callback is not a function");
                 *out_result = R8E_UNDEFINED;
@@ -1562,7 +1665,7 @@ static bool r8e_interp_builtin_method(R8EInterpContext *ctx,
             return true;
         }
 
-        if (method_atom == 131 /* R8E_ATOM_filter */) {
+        if (method_atom == g_method_atoms.filter) {
             if (argc < 1 || !r8e_is_callable(argv[0])) {
                 r8e_interp_throw_type_error(ctx, "filter callback is not a function");
                 *out_result = R8E_UNDEFINED;
@@ -1591,7 +1694,7 @@ static bool r8e_interp_builtin_method(R8EInterpContext *ctx,
             return true;
         }
 
-        if (method_atom == 121 /* R8E_ATOM_join */) {
+        if (method_atom == g_method_atoms.join) {
             char sep_buf[8]; uint32_t sep_len;
             const char *sep = ","; sep_len = 1;
             if (argc >= 1 && r8e_is_string_val(argv[0])) {
@@ -1617,6 +1720,210 @@ static bool r8e_interp_builtin_method(R8EInterpContext *ctx,
             joined[total] = '\0';
             *out_result = r8e_interp_make_string(joined, (uint32_t)total);
             free(joined);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.reduce) {
+            if (argc < 1 || !r8e_is_callable(argv[0])) {
+                r8e_interp_throw_type_error(ctx, "reduce callback is not a function");
+                *out_result = R8E_UNDEFINED;
+                return true;
+            }
+            R8EValue accum;
+            uint32_t start_idx;
+            if (argc >= 2) {
+                accum = argv[1];
+                start_idx = 0;
+            } else if (arr->length > 0) {
+                accum = arr->elements[0];
+                start_idx = 1;
+            } else {
+                r8e_interp_throw_type_error(ctx, "reduce of empty array with no initial value");
+                *out_result = R8E_UNDEFINED;
+                return true;
+            }
+            for (uint32_t i = start_idx; i < arr->length; i++) {
+                R8EValue cb_args[4];
+                cb_args[0] = accum;
+                cb_args[1] = arr->elements[i];
+                cb_args[2] = r8e_interp_from_int32((int32_t)i);
+                cb_args[3] = this_val;
+                accum = r8e_interp_call_internal(ctx, argv[0],
+                    R8E_UNDEFINED, cb_args, 4, false);
+                if (ctx->has_exception) { *out_result = R8E_UNDEFINED; return true; }
+            }
+            *out_result = accum;
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.forEach) {
+            if (argc < 1 || !r8e_is_callable(argv[0])) {
+                r8e_interp_throw_type_error(ctx, "forEach callback is not a function");
+                *out_result = R8E_UNDEFINED;
+                return true;
+            }
+            for (uint32_t i = 0; i < arr->length; i++) {
+                R8EValue cb_args[3];
+                cb_args[0] = arr->elements[i];
+                cb_args[1] = r8e_interp_from_int32((int32_t)i);
+                cb_args[2] = this_val;
+                r8e_interp_call_internal(ctx, argv[0],
+                    R8E_UNDEFINED, cb_args, 3, false);
+                if (ctx->has_exception) { *out_result = R8E_UNDEFINED; return true; }
+            }
+            *out_result = R8E_UNDEFINED;
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.find) {
+            if (argc < 1 || !r8e_is_callable(argv[0])) {
+                *out_result = R8E_UNDEFINED;
+                return true;
+            }
+            for (uint32_t i = 0; i < arr->length; i++) {
+                R8EValue cb_args[3];
+                cb_args[0] = arr->elements[i];
+                cb_args[1] = r8e_interp_from_int32((int32_t)i);
+                cb_args[2] = this_val;
+                R8EValue ret = r8e_interp_call_internal(ctx, argv[0],
+                    R8E_UNDEFINED, cb_args, 3, false);
+                if (ctx->has_exception) { *out_result = R8E_UNDEFINED; return true; }
+                if (r8e_is_truthy(ret)) {
+                    *out_result = arr->elements[i];
+                    return true;
+                }
+            }
+            *out_result = R8E_UNDEFINED;
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.indexOf) {
+            if (argc < 1) { *out_result = r8e_interp_from_int32(-1); return true; }
+            for (uint32_t i = 0; i < arr->length; i++) {
+                if (r8e_strict_equal(arr->elements[i], argv[0])) {
+                    *out_result = r8e_interp_from_int32((int32_t)i);
+                    return true;
+                }
+            }
+            *out_result = r8e_interp_from_int32(-1);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.includes) {
+            if (argc < 1) { *out_result = R8E_FALSE; return true; }
+            for (uint32_t i = 0; i < arr->length; i++) {
+                if (r8e_strict_equal(arr->elements[i], argv[0])) {
+                    *out_result = R8E_TRUE;
+                    return true;
+                }
+            }
+            *out_result = R8E_FALSE;
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.slice) {
+            int32_t start = 0, end = (int32_t)arr->length;
+            if (argc >= 1 && R8E_IS_INT32(argv[0]))
+                start = r8e_interp_get_int32(argv[0]);
+            if (argc >= 2 && R8E_IS_INT32(argv[1]))
+                end = r8e_interp_get_int32(argv[1]);
+            if (start < 0) start += (int32_t)arr->length;
+            if (end < 0) end += (int32_t)arr->length;
+            if (start < 0) start = 0;
+            if (end > (int32_t)arr->length) end = (int32_t)arr->length;
+            uint32_t new_len = (end > start) ? (uint32_t)(end - start) : 0;
+            R8EArrayInterp *res = (R8EArrayInterp *)calloc(1, sizeof(R8EArrayInterp));
+            if (!res) { *out_result = R8E_UNDEFINED; return true; }
+            res->flags = (R8E_GC_KIND_ARRAY << R8E_GC_KIND_SHIFT);
+            res->proto_id = 2;
+            res->length = new_len;
+            res->capacity = new_len > 0 ? new_len : 1;
+            res->elements = (R8EValue *)calloc(res->capacity, sizeof(R8EValue));
+            for (uint32_t i = 0; i < new_len; i++)
+                res->elements[i] = arr->elements[start + i];
+            *out_result = r8e_interp_from_pointer(res);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.reverse) {
+            for (uint32_t i = 0; i < arr->length / 2; i++) {
+                R8EValue tmp = arr->elements[i];
+                arr->elements[i] = arr->elements[arr->length - 1 - i];
+                arr->elements[arr->length - 1 - i] = tmp;
+            }
+            *out_result = this_val;
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.shift) {
+            if (arr->length == 0) {
+                *out_result = R8E_UNDEFINED;
+            } else {
+                *out_result = arr->elements[0];
+                for (uint32_t i = 1; i < arr->length; i++)
+                    arr->elements[i-1] = arr->elements[i];
+                arr->length--;
+            }
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.unshift) {
+            /* Grow if needed */
+            uint32_t new_len = arr->length + argc;
+            if (new_len > arr->capacity) {
+                uint32_t new_cap = new_len * 2;
+                R8EValue *new_el = (R8EValue *)realloc(arr->elements,
+                    new_cap * sizeof(R8EValue));
+                if (!new_el) { *out_result = r8e_interp_from_int32(0); return true; }
+                arr->elements = new_el;
+                arr->capacity = new_cap;
+            }
+            /* Shift existing elements right */
+            for (int32_t i = (int32_t)arr->length - 1; i >= 0; i--)
+                arr->elements[i + argc] = arr->elements[i];
+            for (int i = 0; i < argc; i++)
+                arr->elements[i] = argv[i];
+            arr->length = new_len;
+            *out_result = r8e_interp_from_int32((int32_t)new_len);
+            return true;
+        }
+
+        if (method_atom == g_method_atoms.concat) {
+            /* Count total elements */
+            uint32_t total = arr->length;
+            for (int i = 0; i < argc; i++) {
+                if (R8E_IS_POINTER(argv[i])) {
+                    void *ap = r8e_interp_get_pointer(argv[i]);
+                    if (ap && R8E_GC_GET_KIND(((R8EGCHeader *)ap)->flags) == R8E_GC_KIND_ARRAY) {
+                        total += ((R8EArrayInterp *)ap)->length;
+                        continue;
+                    }
+                }
+                total++;
+            }
+            R8EArrayInterp *res = (R8EArrayInterp *)calloc(1, sizeof(R8EArrayInterp));
+            if (!res) { *out_result = R8E_UNDEFINED; return true; }
+            res->flags = (R8E_GC_KIND_ARRAY << R8E_GC_KIND_SHIFT);
+            res->proto_id = 2;
+            res->capacity = total > 0 ? total : 1;
+            res->elements = (R8EValue *)calloc(res->capacity, sizeof(R8EValue));
+            uint32_t idx = 0;
+            for (uint32_t i = 0; i < arr->length; i++)
+                res->elements[idx++] = arr->elements[i];
+            for (int i = 0; i < argc; i++) {
+                if (R8E_IS_POINTER(argv[i])) {
+                    void *ap = r8e_interp_get_pointer(argv[i]);
+                    if (ap && R8E_GC_GET_KIND(((R8EGCHeader *)ap)->flags) == R8E_GC_KIND_ARRAY) {
+                        R8EArrayInterp *src = (R8EArrayInterp *)ap;
+                        for (uint32_t j = 0; j < src->length; j++)
+                            res->elements[idx++] = src->elements[j];
+                        continue;
+                    }
+                }
+                res->elements[idx++] = argv[i];
+            }
+            res->length = idx;
+            *out_result = r8e_interp_from_pointer(res);
             return true;
         }
 
@@ -1825,6 +2132,53 @@ static R8EValue r8e_interp_call_internal(R8EInterpContext *ctx,
         return R8E_UNDEFINED;
     }
 
+    /* For 'new' on a class constructor object: look up prototype.constructor
+     * which should be a closure (installed by OP_CLASS_METHOD for 'constructor') */
+    if (kind != R8E_GC_KIND_CLOSURE && is_construct && kind == R8E_GC_KIND_OBJECT) {
+        /* Try to find the constructor closure on prototype */
+        R8EValue proto = r8e_interp_get_prop(ctx, callee, 2 /* prototype */);
+        if (R8E_IS_POINTER(proto)) {
+            R8EValue ctor_fn = r8e_interp_get_prop(ctx, proto, 3 /* constructor */);
+            if (R8E_IS_POINTER(ctor_fn)) {
+                void *ctor_ptr = r8e_interp_get_pointer(ctor_fn);
+                if (ctor_ptr) {
+                    R8EGCHeader *ctor_h = (R8EGCHeader *)ctor_ptr;
+                    if (R8E_GC_GET_KIND(ctor_h->flags) == R8E_GC_KIND_CLOSURE) {
+                        /* Create a new object with prototype set */
+                        R8EObjTier1Interp *new_obj = (R8EObjTier1Interp *)calloc(
+                            1, sizeof(R8EObjTier1Interp));
+                        if (!new_obj) {
+                            r8e_interp_throw_type_error(ctx, "out of memory");
+                            return R8E_UNDEFINED;
+                        }
+                        new_obj->flags = (R8E_GC_KIND_OBJECT << R8E_GC_KIND_SHIFT) | 1;
+                        R8EGCHeader *proto_h = (R8EGCHeader *)r8e_interp_get_pointer(proto);
+                        new_obj->proto_id = proto_h ? proto_h->proto_id : 1;
+                        new_obj->count = 0;
+
+                        R8EValue new_this = r8e_interp_from_pointer(new_obj);
+                        R8EValue ret = r8e_interp_call_internal(ctx, ctor_fn,
+                            new_this, argv, argc, false);
+                        if (ctx->has_exception) return R8E_UNDEFINED;
+
+                        /* If constructor returned an object, use that; otherwise use 'this' */
+                        if (R8E_IS_POINTER(ret)) return ret;
+                        return new_this;
+                    }
+                }
+            }
+        }
+        /* No constructor method found - just create empty object with prototype */
+        R8EObjTier1Interp *new_obj = (R8EObjTier1Interp *)calloc(
+            1, sizeof(R8EObjTier1Interp));
+        if (new_obj) {
+            new_obj->flags = (R8E_GC_KIND_OBJECT << R8E_GC_KIND_SHIFT) | 1;
+            new_obj->proto_id = 1;
+            new_obj->count = 0;
+        }
+        return r8e_interp_from_pointer(new_obj);
+    }
+
     /* Closure (bytecode function) call */
     if (kind != R8E_GC_KIND_CLOSURE) {
         r8e_interp_throw_type_error(ctx, "not a function");
@@ -1899,8 +2253,11 @@ static R8EValue r8e_interp_call_internal(R8EInterpContext *ctx,
     /* Verify canary */
     assert(*frame->canary_ptr == R8E_STACK_CANARY);
 
-    /* Free slot buffer */
-    free(slot_buf);
+    /* Free slot buffer (unless shared with a closure env frame) */
+    if (!frame->env_frame) {
+        free(slot_buf);
+    }
+    /* else: env_frame holds a reference to slot_buf via its slots pointer */
 
     /* Async function: wrap result in a resolved/rejected Promise */
     if (func->is_async && !is_construct) {
@@ -3093,6 +3450,64 @@ static R8EValue r8e_interp_execute(R8EInterpContext *ctx,
         } else {
             func_val = R8E_UNDEFINED;
         }
+
+        /* If the template closure exists, create a new runtime closure that
+         * captures the current frame's locals (for proper closure semantics) */
+        if (R8E_IS_POINTER(func_val)) {
+            R8EClosureInterp *template_cl = (R8EClosureInterp *)
+                r8e_interp_get_pointer(func_val);
+            if (template_cl && R8E_GC_GET_KIND(template_cl->flags) == R8E_GC_KIND_CLOSURE) {
+                R8EFunctionInterp *fn = template_cl->func;
+
+                /* Create a new closure sharing the function but with its own env */
+                R8EClosureInterp *new_cl = (R8EClosureInterp *)calloc(
+                    1, sizeof(R8EClosureInterp));
+                if (new_cl) {
+                    new_cl->flags = template_cl->flags;
+                    new_cl->proto_id = template_cl->proto_id;
+                    new_cl->func = fn;
+
+                    /* Check if the enclosing frame has an env_frame to share,
+                     * or create one from the current locals */
+                    if (!frame->env_frame && frame->locals) {
+                        /* Create an env frame from the current locals */
+                        uint16_t nlocals = frame->func ? frame->func->local_count : 0;
+                        if (nlocals > 0) {
+                            R8EEnvFrameInterp *env = (R8EEnvFrameInterp *)calloc(
+                                1, sizeof(R8EEnvFrameInterp));
+                            if (env) {
+                                env->flags = 0;
+                                env->refcount = 1;
+                                env->slot_count = nlocals;
+                                env->slots = frame->locals; /* share the locals array */
+                                frame->env_frame = env;
+                                frame->owns_locals = false; /* don't free locals on return */
+                            }
+                        }
+                    }
+
+                    if (frame->env_frame) {
+                        new_cl->capture_count = frame->env_frame->slot_count;
+                        new_cl->capture_mode = R8E_CAPTURE_MODE_FRAME;
+                        new_cl->storage.frm.env_frame = frame->env_frame;
+                        frame->env_frame->refcount++;
+                    } else if (closure && closure->capture_mode == R8E_CAPTURE_MODE_FRAME) {
+                        /* Inner closure inherits outer closure's env frame */
+                        new_cl->capture_count = closure->capture_count;
+                        new_cl->capture_mode = R8E_CAPTURE_MODE_FRAME;
+                        new_cl->storage.frm.env_frame = closure->storage.frm.env_frame;
+                        if (new_cl->storage.frm.env_frame)
+                            new_cl->storage.frm.env_frame->refcount++;
+                    } else {
+                        new_cl->capture_count = 0;
+                        new_cl->capture_mode = R8E_CAPTURE_MODE_INLINE;
+                    }
+
+                    func_val = r8e_interp_from_pointer(new_cl);
+                }
+            }
+        }
+
         PUSH(func_val);
         DISPATCH();
     }

@@ -758,7 +758,7 @@ typedef struct {
     uint8_t   register_idx;    /* local register assignment */
     uint8_t   classification;  /* R8EVarClass */
     uint8_t   flags;           /* bitfield below */
-    uint8_t   pad;
+    uint8_t   capture_slot;    /* capture slot index when captured by inner func */
 } R8EVarInfo;
 
 /* R8EVarInfo.flags bits */
@@ -782,7 +782,8 @@ struct R8EScope {
     uint16_t  local_base;     /* starting register index */
     uint8_t   flags;          /* R8E_SCOPE_* flags */
     uint8_t   depth;          /* nesting depth */
-    uint16_t  pad;
+    uint8_t   capture_count;  /* number of captured variables in this function */
+    uint8_t   pad;
     R8EVarInfo vars[R8E_MAX_LOCALS];
 };
 

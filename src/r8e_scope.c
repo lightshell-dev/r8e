@@ -196,7 +196,7 @@ static int r8e_scope_define_var(R8EScope *scope, uint32_t atom,
     var->register_idx = reg;
     var->classification = R8E_VAR_BORROWED; /* default: may be promoted */
     var->flags = var_flags;
-    var->pad = 0;
+    var->capture_slot = 0;
     scope->local_count++;
 
     return reg;
@@ -238,6 +238,27 @@ static R8EResolveResult r8e_scope_resolve_var(R8EScope *scope, uint32_t atom)
 
                     /* Mark as captured in the defining scope */
                     s->vars[i].flags |= R8E_VAR_IS_CAPTURED;
+
+                    /* Assign capture index: find the current function scope
+                     * and use its capture_count as the index */
+                    R8EScope *func_scope = scope;
+                    while (func_scope && !(func_scope->flags & R8E_SCOPE_IS_FUNCTION)) {
+                        func_scope = func_scope->parent;
+                    }
+                    if (func_scope) {
+                        /* Check if this variable already has a capture idx
+                         * assigned (for repeated accesses to same captured var) */
+                        bool already_captured = false;
+                        /* Use a simple approach: store capture_idx in the var's
+                         * register_idx field is not safe. Instead, bump capture_count
+                         * only on first capture. Use a flag bit to detect. */
+                        if (!(s->vars[i].flags & 0x40)) { /* 0x40 = already has capture idx */
+                            s->vars[i].flags |= 0x40;
+                            s->vars[i].capture_slot = func_scope->capture_count;
+                            func_scope->capture_count++;
+                        }
+                        result.capture_idx = s->vars[i].capture_slot;
+                    }
                 }
                 return result;
             }

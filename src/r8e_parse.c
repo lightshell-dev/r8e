@@ -367,6 +367,9 @@ static int  parse_arguments(R8EParser *p);
 static void parse_array_literal(R8EParser *p);
 static void parse_object_literal(R8EParser *p);
 static void parse_arrow_function(R8EParser *p, bool is_async);
+static void parse_arrow_with_params(R8EParser *p, bool is_async);
+static void parse_method_body(R8EParser *p, R8EBytecodeBuffer *outer_bc,
+                               int func_idx);
 
 /* =========================================================================
  * Operator Precedence Table (Pratt parser)
@@ -707,18 +710,70 @@ static void parse_primary_expr(R8EParser *p)
             break;
         }
 
-        /* Parse as expression; if we see => after ), convert to arrow.
-         * For now, simple approach: parse the expression normally. */
+        /* Speculative lookahead: save lexer state and scan ahead to detect
+         * if this is a parenthesized arrow function like (x) => or (a, b) => */
+        {
+            R8ELexer saved_lex = p->lex;
+            R8EToken saved_cur = p->cur;
+            R8EToken saved_prev = p->prev;
+            bool is_arrow = false;
+            int depth = 0;
+
+            /* Scan forward to find matching ) */
+            R8EToken probe = p->cur;
+            bool valid_params = true;
+            while (probe.type != R8E_TOK_EOF) {
+                if (probe.type == R8E_TOK_LPAREN) {
+                    depth++;
+                } else if (probe.type == R8E_TOK_RPAREN) {
+                    if (depth == 0) break;
+                    depth--;
+                } else if (probe.type != R8E_TOK_IDENT &&
+                           probe.type != R8E_TOK_COMMA &&
+                           probe.type != R8E_TOK_ASSIGN &&
+                           probe.type != R8E_TOK_ELLIPSIS &&
+                           probe.type != R8E_TOK_NUMBER &&
+                           probe.type != R8E_TOK_STRING &&
+                           probe.type != R8E_TOK_KW_TRUE &&
+                           probe.type != R8E_TOK_KW_FALSE &&
+                           probe.type != R8E_TOK_KW_NULL &&
+                           probe.type != R8E_TOK_KW_UNDEFINED &&
+                           probe.type != R8E_TOK_LBRACKET &&
+                           probe.type != R8E_TOK_RBRACKET &&
+                           probe.type != R8E_TOK_LBRACE &&
+                           probe.type != R8E_TOK_RBRACE &&
+                           probe.type != R8E_TOK_COLON &&
+                           depth == 0) {
+                    valid_params = false;
+                    break;
+                }
+                r8e_lexer_next(&p->lex, &probe);
+            }
+
+            if (valid_params && probe.type == R8E_TOK_RPAREN) {
+                /* Check if => follows */
+                R8EToken after_rparen;
+                r8e_lexer_next(&p->lex, &after_rparen);
+                if (after_rparen.type == R8E_TOK_ARROW) {
+                    is_arrow = true;
+                }
+            }
+
+            /* Restore lexer state */
+            p->lex = saved_lex;
+            p->cur = saved_cur;
+            p->prev = saved_prev;
+
+            if (is_arrow) {
+                /* Parse as arrow function with parenthesized parameters */
+                parse_arrow_with_params(p, false);
+                break;
+            }
+        }
+
+        /* Not an arrow — parse as grouping expression */
         parse_expression(p);
         r8e_consume(p, R8E_TOK_RPAREN, "expected ')'");
-
-        /* Check for arrow after ) */
-        if (r8e_check(p, R8E_TOK_ARROW)) {
-            /* TODO: full arrow speculation-and-patch.
-             * For now, error on complex arrow params. */
-            r8e_parse_error(p, "complex arrow parameters not yet supported "
-                           "(use function expressions)");
-        }
         break;
     }
 
@@ -938,7 +993,42 @@ static void parse_object_literal(R8EParser *p)
             /* Method shorthand: { foo() {} } */
             if (r8e_check(p, R8E_TOK_LPAREN)) {
                 emit_op(p, R8E_OP_DUP);
-                parse_function_decl(p, true, false);
+
+                /* Parse method body without 'function' keyword */
+                {
+                    R8EBytecodeBuffer *outer_bc2 = p->bc;
+                    R8EScope *outer_scope2 = p->scope;
+                    uint16_t outer_max2 = p->max_regs;
+                    bool outer_in_func2 = p->in_function;
+
+                    int fidx = r8e_bc_add_function(outer_bc2);
+                    if (fidx < 0) {
+                        r8e_parse_error(p, "too many nested functions");
+                        break;
+                    }
+
+                    R8EBytecodeBuffer *fbc = (R8EBytecodeBuffer *)malloc(
+                        sizeof(R8EBytecodeBuffer));
+                    r8e_bc_init(fbc);
+                    outer_bc2->functions[fidx].bc = fbc;
+                    outer_bc2->functions[fidx].name_atom = key_atom;
+
+                    p->bc = fbc;
+                    p->max_regs = 0;
+                    p->in_function = true;
+                    push_scope(p, R8E_SCOPE_IS_FUNCTION);
+
+                    parse_method_body(p, outer_bc2, fidx);
+
+                    pop_scope(p);
+                    p->bc = outer_bc2;
+                    p->scope = outer_scope2;
+                    p->max_regs = outer_max2;
+                    p->in_function = outer_in_func2;
+
+                    emit_op_u16(p, R8E_OP_NEW_FUNCTION, (uint16_t)fidx);
+                }
+
                 emit_op_u32(p, R8E_OP_INIT_PROP, key_atom);
                 if (!r8e_check(p, R8E_TOK_RBRACE)) {
                     r8e_consume(p, R8E_TOK_COMMA, "expected ',' or '}'");
@@ -977,17 +1067,39 @@ static void parse_member_expr(R8EParser *p)
 
     for (;;) {
         if (r8e_check(p, R8E_TOK_DOT)) {
-            r8e_advance(p);
-            if (p->cur.type != R8E_TOK_IDENT &&
-                !(p->cur.type >= R8E_TOK_KW_AS &&
-                  p->cur.type <= R8E_TOK_KW_YIELD)) {
+            /* Peek ahead: if property name is followed by '(', this is a
+             * method call. Don't consume it here; let parse_call_expr handle
+             * the .method(args) pattern for proper CALL_METHOD dispatch. */
+            R8ELexer saved_lex = p->lex;
+            R8EToken saved_cur = p->cur;
+            R8EToken saved_prev = p->prev;
+            r8e_advance(p); /* consume . */
+            if ((p->cur.type == R8E_TOK_IDENT ||
+                 (p->cur.type >= R8E_TOK_KW_AS &&
+                  p->cur.type <= R8E_TOK_KW_YIELD))) {
+                /* Check if next token after property name is ( */
+                R8EToken prop_tok = p->cur;
+                R8ELexer saved_lex2 = p->lex;
+                R8EToken peeked;
+                r8e_lexer_next(&p->lex, &peeked);
+                p->lex = saved_lex2;
+                if (peeked.type == R8E_TOK_LPAREN) {
+                    /* Method call pattern: restore to before '.' and break
+                     * so parse_call_expr handles it */
+                    p->lex = saved_lex;
+                    p->cur = saved_cur;
+                    p->prev = saved_prev;
+                    break;
+                }
+                /* Not a method call: emit GET_PROP */
+                uint32_t atom = r8e_parser_intern(p, prop_tok.str_val.str,
+                                                   prop_tok.str_val.len);
+                r8e_advance(p);
+                emit_op_u32(p, R8E_OP_GET_PROP, atom);
+            } else {
                 r8e_parse_error(p, "expected property name after '.'");
                 break;
             }
-            uint32_t atom = r8e_parser_intern(p, p->cur.str_val.str,
-                                               p->cur.str_val.len);
-            r8e_advance(p);
-            emit_op_u32(p, R8E_OP_GET_PROP, atom);
         } else if (r8e_check(p, R8E_TOK_LBRACKET)) {
             r8e_advance(p);
             parse_expression(p);
@@ -1670,6 +1782,106 @@ static void parse_arrow_function(R8EParser *p, bool is_async)
     emit_op_u16(p, R8E_OP_NEW_FUNCTION, (uint16_t)func_idx);
 }
 
+/* --- Arrow Function with Parenthesized Parameters: (a, b) => ... --- */
+static void parse_arrow_with_params(R8EParser *p, bool is_async)
+{
+    /* Current token is the first token inside ( — the ( was already consumed */
+    R8EBytecodeBuffer *outer_bc = p->bc;
+    R8EScope *outer_scope = p->scope;
+    uint16_t outer_max = p->max_regs;
+    bool outer_in_func = p->in_function;
+
+    int func_idx = r8e_bc_add_function(outer_bc);
+    if (func_idx < 0) {
+        r8e_parse_error(p, "too many nested functions");
+        return;
+    }
+
+    R8EBytecodeBuffer *func_bc = (R8EBytecodeBuffer *)malloc(
+        sizeof(R8EBytecodeBuffer));
+    r8e_bc_init(func_bc);
+    outer_bc->functions[func_idx].bc = func_bc;
+    outer_bc->functions[func_idx].is_arrow = 1;
+    outer_bc->functions[func_idx].is_async = is_async ? 1 : 0;
+
+    p->bc = func_bc;
+    p->max_regs = 0;
+    p->in_function = true;
+    push_scope(p, R8E_SCOPE_IS_FUNCTION);
+
+    /* Parse parameter list */
+    uint16_t param_count = 0;
+    while (!r8e_check(p, R8E_TOK_RPAREN) && !r8e_parser_at_end(p)) {
+        if (r8e_check(p, R8E_TOK_ELLIPSIS)) {
+            /* Rest parameter */
+            r8e_advance(p);
+            r8e_consume(p, R8E_TOK_IDENT, "expected rest parameter name");
+            uint32_t atom = r8e_parser_intern(p, p->prev.str_val.str,
+                                               p->prev.str_val.len);
+            int reg = define_var(p, atom, R8E_VAR_IS_PARAM);
+            if (reg >= 0) {
+                emit_op_u8(p, R8E_OP_LOAD_REST_ARGS, (uint8_t)param_count);
+                emit_op_u8(p, R8E_OP_STORE_LOCAL, (uint8_t)reg);
+            }
+            param_count++;
+            break;
+        }
+
+        r8e_consume(p, R8E_TOK_IDENT, "expected parameter name");
+        uint32_t atom = r8e_parser_intern(p, p->prev.str_val.str,
+                                           p->prev.str_val.len);
+        int reg = define_var(p, atom, R8E_VAR_IS_PARAM);
+
+        if (reg >= 0) {
+            emit_op_u8(p, R8E_OP_LOAD_ARG, (uint8_t)param_count);
+
+            /* Default parameter value */
+            if (r8e_match(p, R8E_TOK_ASSIGN)) {
+                emit_op(p, R8E_OP_DUP);
+                uint32_t skip = emit_jump(p, R8E_OP_JUMP_IF_NULLISH);
+                emit_op_u8(p, R8E_OP_STORE_LOCAL, (uint8_t)reg);
+                uint32_t end = emit_jump(p, R8E_OP_JUMP);
+                patch_jump(p, skip);
+                emit_op(p, R8E_OP_DROP);
+                parse_assignment_expr(p);
+                emit_op_u8(p, R8E_OP_STORE_LOCAL, (uint8_t)reg);
+                patch_jump(p, end);
+            } else {
+                emit_op_u8(p, R8E_OP_STORE_LOCAL, (uint8_t)reg);
+            }
+        }
+
+        param_count++;
+        if (!r8e_check(p, R8E_TOK_RPAREN)) {
+            r8e_consume(p, R8E_TOK_COMMA, "expected ',' between parameters");
+        }
+    }
+
+    r8e_consume(p, R8E_TOK_RPAREN, "expected ')'");
+    r8e_consume(p, R8E_TOK_ARROW, "expected '=>'");
+
+    outer_bc->functions[func_idx].param_count = param_count;
+
+    if (r8e_check(p, R8E_TOK_LBRACE)) {
+        parse_block(p);
+        emit_op(p, R8E_OP_RETURN_UNDEFINED);
+    } else {
+        parse_assignment_expr(p);
+        emit_op(p, R8E_OP_RETURN);
+    }
+
+    outer_bc->functions[func_idx].local_count = p->max_regs;
+    outer_bc->functions[func_idx].stack_size = p->bc->max_stack;
+
+    pop_scope(p);
+    p->bc = outer_bc;
+    p->scope = outer_scope;
+    p->max_regs = outer_max;
+    p->in_function = outer_in_func;
+
+    emit_op_u16(p, R8E_OP_NEW_FUNCTION, (uint16_t)func_idx);
+}
+
 /* =========================================================================
  * PART 3: Statement Parsing
  * ========================================================================= */
@@ -2250,37 +2462,34 @@ static void parse_switch_stmt(R8EParser *p)
     bool old_in_switch = p->in_switch;
     p->in_switch = true;
 
-    /* Collect case jumps */
-    uint32_t case_jumps[256];
-    int case_count = 0;
-    uint32_t default_jump = 0;
-    bool has_default = false;
-
-    /* First pass: emit comparisons and conditional jumps */
-    /* We use a simple approach: for each case, DUP the switch value,
-     * compare, and jump to the body if equal. */
+    /* Single-pass switch: for each case, compare the switch value
+     * against the case expression. If it matches, execute the body.
+     * If it doesn't match, skip over the body to the next case.
+     * break jumps to the end of the entire switch. */
 
     while (!r8e_check(p, R8E_TOK_RBRACE) && !r8e_parser_at_end(p)) {
         if (r8e_check(p, R8E_TOK_KW_CASE)) {
             r8e_advance(p);
-            emit_op(p, R8E_OP_DUP); /* dup switch value */
+            emit_op(p, R8E_OP_DUP); /* dup switch value for comparison */
             parse_expression(p);
             emit_op(p, R8E_OP_SEQ); /* strict equality */
             r8e_consume(p, R8E_TOK_COLON, "expected ':'");
-            uint32_t body_jump = emit_jump(p, R8E_OP_JUMP_IF_TRUE);
-            if (case_count < 256) case_jumps[case_count++] = body_jump;
 
-            /* Parse case body statements */
+            /* If comparison fails, jump over body to next case */
+            uint32_t skip_body = emit_jump(p, R8E_OP_JUMP_IF_FALSE);
+
+            /* Case body: execute if matched */
             while (!r8e_check(p, R8E_TOK_KW_CASE) &&
                    !r8e_check(p, R8E_TOK_KW_DEFAULT) &&
                    !r8e_check(p, R8E_TOK_RBRACE) &&
                    !r8e_parser_at_end(p)) {
                 parse_declaration(p);
             }
+
+            patch_jump(p, skip_body);
         } else if (r8e_check(p, R8E_TOK_KW_DEFAULT)) {
             r8e_advance(p);
             r8e_consume(p, R8E_TOK_COLON, "expected ':'");
-            has_default = true;
 
             while (!r8e_check(p, R8E_TOK_KW_CASE) &&
                    !r8e_check(p, R8E_TOK_KW_DEFAULT) &&
@@ -2297,11 +2506,6 @@ static void parse_switch_stmt(R8EParser *p)
     emit_op(p, R8E_OP_DROP); /* drop switch value */
 
     p->in_switch = old_in_switch;
-
-    /* Patch all case jumps (simplified: they fall through) */
-    for (int i = 0; i < case_count; i++) {
-        patch_jump(p, case_jumps[i]);
-    }
 
     R8EBreakLabel *label = r8e_labels_pop(&p->labels);
     if (label) {
@@ -2537,12 +2741,13 @@ static void parse_function_decl(R8EParser *p, bool is_expr, bool is_async)
 
             /* Default parameter value */
             if (r8e_match(p, R8E_TOK_ASSIGN)) {
-                uint32_t skip = emit_jump(p, R8E_OP_JUMP_IF_FALSE);
-                /* Value is not undefined, use it */
+                emit_op(p, R8E_OP_DUP);
+                uint32_t skip = emit_jump(p, R8E_OP_JUMP_IF_NULLISH);
+                /* Value is not undefined/null, use it */
                 emit_op_u8(p, R8E_OP_STORE_LOCAL, (uint8_t)reg);
                 uint32_t end = emit_jump(p, R8E_OP_JUMP);
                 patch_jump(p, skip);
-                /* Value is undefined, use default */
+                /* Value is undefined/null, use default */
                 emit_op(p, R8E_OP_DROP);
                 parse_assignment_expr(p);
                 emit_op_u8(p, R8E_OP_STORE_LOCAL, (uint8_t)reg);
@@ -2591,6 +2796,71 @@ static void parse_function_decl(R8EParser *p, bool is_expr, bool is_async)
             emit_op_u8(p, R8E_OP_STORE_LOCAL, (uint8_t)reg);
         }
     }
+}
+
+/* --- Parse method body (params + block) without consuming 'function' keyword --- */
+static void parse_method_body(R8EParser *p, R8EBytecodeBuffer *outer_bc,
+                               int func_idx)
+{
+    struct R8EFuncDesc *fd = &outer_bc->functions[func_idx];
+
+    /* Parameters */
+    r8e_consume(p, R8E_TOK_LPAREN, "expected '(' for parameters");
+    uint16_t param_count = 0;
+
+    while (!r8e_check(p, R8E_TOK_RPAREN) && !r8e_parser_at_end(p)) {
+        if (r8e_check(p, R8E_TOK_ELLIPSIS)) {
+            r8e_advance(p);
+            r8e_consume(p, R8E_TOK_IDENT, "expected rest parameter name");
+            uint32_t atom = r8e_parser_intern(p, p->prev.str_val.str,
+                                               p->prev.str_val.len);
+            int reg = define_var(p, atom, R8E_VAR_IS_PARAM);
+            if (reg >= 0) {
+                emit_op_u8(p, R8E_OP_LOAD_REST_ARGS, (uint8_t)param_count);
+                emit_op_u8(p, R8E_OP_STORE_LOCAL, (uint8_t)reg);
+            }
+            param_count++;
+            break;
+        }
+
+        r8e_consume(p, R8E_TOK_IDENT, "expected parameter name");
+        uint32_t atom = r8e_parser_intern(p, p->prev.str_val.str,
+                                           p->prev.str_val.len);
+        int reg = define_var(p, atom, R8E_VAR_IS_PARAM);
+
+        if (reg >= 0) {
+            emit_op_u8(p, R8E_OP_LOAD_ARG, (uint8_t)param_count);
+
+            if (r8e_match(p, R8E_TOK_ASSIGN)) {
+                emit_op(p, R8E_OP_DUP);
+                uint32_t skip = emit_jump(p, R8E_OP_JUMP_IF_NULLISH);
+                emit_op_u8(p, R8E_OP_STORE_LOCAL, (uint8_t)reg);
+                uint32_t end = emit_jump(p, R8E_OP_JUMP);
+                patch_jump(p, skip);
+                emit_op(p, R8E_OP_DROP);
+                parse_assignment_expr(p);
+                emit_op_u8(p, R8E_OP_STORE_LOCAL, (uint8_t)reg);
+                patch_jump(p, end);
+            } else {
+                emit_op_u8(p, R8E_OP_STORE_LOCAL, (uint8_t)reg);
+            }
+        }
+
+        param_count++;
+        if (!r8e_check(p, R8E_TOK_RPAREN)) {
+            r8e_consume(p, R8E_TOK_COMMA, "expected ',' or ')'");
+        }
+    }
+
+    r8e_consume(p, R8E_TOK_RPAREN, "expected ')'");
+    fd->param_count = param_count;
+
+    /* Function body */
+    parse_block(p);
+    emit_op(p, R8E_OP_RETURN_UNDEFINED);
+
+    fd->local_count = p->max_regs;
+    fd->stack_size = p->bc->max_stack;
 }
 
 /* --- Class Declaration (simplified) --- */
@@ -2657,7 +2927,48 @@ static void parse_class_decl(R8EParser *p, bool is_expr)
             r8e_advance(p);
 
             emit_op(p, R8E_OP_DUP); /* dup class object */
-            parse_function_decl(p, true, false);
+
+            /* Parse method body directly (no 'function' keyword) */
+            {
+                R8EBytecodeBuffer *outer_bc2 = p->bc;
+                R8EScope *outer_scope2 = p->scope;
+                uint16_t outer_max2 = p->max_regs;
+                bool outer_in_func2 = p->in_function;
+                bool outer_in_loop2 = p->in_loop;
+                bool outer_in_switch2 = p->in_switch;
+
+                int fidx = r8e_bc_add_function(outer_bc2);
+                if (fidx < 0) {
+                    r8e_parse_error(p, "too many nested functions");
+                    break;
+                }
+
+                R8EBytecodeBuffer *fbc = (R8EBytecodeBuffer *)malloc(
+                    sizeof(R8EBytecodeBuffer));
+                r8e_bc_init(fbc);
+                outer_bc2->functions[fidx].bc = fbc;
+                outer_bc2->functions[fidx].name_atom = method_atom;
+
+                p->bc = fbc;
+                p->max_regs = 0;
+                p->in_function = true;
+                p->in_loop = false;
+                p->in_switch = false;
+
+                push_scope(p, R8E_SCOPE_IS_FUNCTION);
+
+                parse_method_body(p, outer_bc2, fidx);
+
+                pop_scope(p);
+                p->bc = outer_bc2;
+                p->scope = outer_scope2;
+                p->max_regs = outer_max2;
+                p->in_function = outer_in_func2;
+                p->in_loop = outer_in_loop2;
+                p->in_switch = outer_in_switch2;
+
+                emit_op_u16(p, R8E_OP_NEW_FUNCTION, (uint16_t)fidx);
+            }
 
             uint8_t mflags = 0;
             if (is_getter) mflags |= 0x01;
